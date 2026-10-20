@@ -10,11 +10,11 @@ These are the escalations the spec reserves for Hisham: clinical safety, patient
 |---|---|---|---|
 | **D1** | Dentally offers no API to read or write clinical notes | **Decided:** copy and paste into Dentally is fine. Phase 4 delivers approved notes as a Dentally-ready copy with an "entered in Dentally" confirmation; API write-back (P4-02) is not planned. Historical audit (Phase 6) still needs a source for Dentally-native notes | Phase 4 and 6 |
 | **D2** | Where patient data is stored and processed | **Decided:** Base44 standard plan, not Enterprise. On that plan Base44 stores data in the US, and its terms allow app data to be used to train AI models, with no opt-out. Phase 1 stores only IDs, times and statuses. See D2a | Before any production Dentally data reaches Base44 |
-| **D2a** | Where transcripts, nurse notes and draft notes are stored, given D2 | Recommended: AWS London, alongside the AI model (needed for D3 anyway), deleted automatically at three months, so no readable clinical content sits in Base44. Alternative: encrypted inside Base44 so the stored text is unreadable to it | Phase 2 |
+| **D2a** | Where transcripts, nurse notes and draft notes are stored, given D2 | **Decided:** Base44 holds them only until the next day, encrypted while held. Aura's Google Workspace keeps (1) Agent Knowledge: de-identified lessons on how notes are written, and (2) a controlled clinical history: each approved note filed under the Dentally patient ID, read only through the app, so the next note can draw on previous visits. Transcripts and nurse notes are not kept after the next day | Phase 2 |
 | **D3** | LLM and speech-to-text providers | LLM: Claude Sonnet 4.6 on Amazon Bedrock pinned to London. STT: bake-off between Speechmatics and AWS Transcribe en-GB | Phase 2 (STT), Phase 3 (LLM) |
 | **D4** | Clinical Safety Officer and DPIA owner | **Decided:** Jennifer Ingledew. DCB0160 asks that the CSO holds current UK professional registration (GDC for a dental practice), has clinical experience in the setting and has health IT clinical risk management training. If Jennifer is not GDC-registered, she leads the DPIA and the safety work and a registered clinician signs off as CSO | Now; DPIA signed before Phase 2 pilot |
 | **D5** | Tooth notation in notes | **Decided:** quadrant and number, for example UR1 (upper right central incisor), never tooth numbers such as 8 or 11. Spoken "upper right one" and written UR1 are accepted; FDI and US numbers are flagged for checking | Phase 3 |
-| **D6** | Retention periods | **Decided:** AuraNoteTaker deletes its clinical content after three months; the record stays in Dentally. Audio is not stored. Audit events (no clinical content) follow their own period, still to be set | Phase 2 (transcripts), Phase 4 (approved notes) |
+| **D6** | Retention periods | **Decided:** Base44 deletes clinical content the next day (D2a); audio is not stored; Dentally keeps the record. **Still open:** how long the clinical history in Google Workspace is kept (proposed: two years from each note) and the audit events' period | Phase 2 (transcripts), Phase 4 (history) |
 | **D7** | What "patient declines" means | No recording and no AI processing of any of that appointment's data | Phase 2 |
 | **D8** | Dentally credentials | **Decided:** a separate read-only key for the AuraNoteTaker app (not AuraMail's), sandbox first. Entered by Hisham straight into the Base44 app's secrets, never sent in chat | Phase 1 integration |
 | **D9** | Identity confirmation while Dentally is down | Not allowed in v1: active sessions continue, new sessions wait for Dentally | Phase 4 |
@@ -128,6 +128,7 @@ Flags: safety = safety-critical; decision = needs a decision above; blocked = ex
 | P4-05 | Failure recovery end-to-end: Dentally, Base44 and speech-to-text outages | safety |
 | P4-06 | Explicit audited patient reassignment flow | safety |
 | P4-07 | Offline identity confirmation policy | safety, decision |
+| P4-08 | Controlled clinical history in Aura's Google Workspace | safety |
 
 #### Phase 5: Agent Knowledge and learning
 
@@ -154,7 +155,7 @@ Flags: safety = safety-critical; decision = needs a decision above; blocked = ex
 | ID | Issue | Flags |
 |---|---|---|
 | P7-01 | Security review and penetration test |  |
-| P7-02 | Retention policy engine, deletion jobs and legal holds |  |
+| P7-02 | Retention policy engine, deletion jobs and legal holds | decision |
 | P7-03 | Tamper-evident audit log (hash chain) |  |
 | P7-04 | Inactivity lock and session security on shared surgery PCs |  |
 | P7-05 | Cross-tenant isolation tests and multi-clinic onboarding |  |

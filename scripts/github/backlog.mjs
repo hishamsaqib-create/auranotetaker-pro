@@ -48,7 +48,7 @@ export const issues = [
     title: 'Create Base44 staging and production apps and link the repository',
     body: `**Goal**: a Base44 home for the backend, set up so patient data is only ever stored under the decided hosting option.
 
-**Decided (D2, 20 October 2026)**: Base44 standard plan, not Enterprise. On that plan Base44 stores data in the US and its terms allow app data to be used to train AI models, with no opt-out. Phase 1 stores only IDs, times and statuses; where Phase 2 keeps transcripts, nurse notes and drafts is follow-up D2a.
+**Decided (D2, 20 October 2026)**: Base44 standard plan, not Enterprise. On that plan Base44 stores data in the US and its terms allow app data to be used to train AI models, with no opt-out. Phase 1 stores only IDs, times and statuses. From Phase 2, clinical content is encrypted in Base44 and deleted the next day; approved notes are kept in a controlled history in Aura's Google Workspace (D2a, P4-08).
 
 ${ac([
   'Separate staging and production Base44 apps exist in the Aura workspace',
@@ -241,11 +241,12 @@ ${ac([
   {
     id: 'P1-14', milestone: 'P1', labels: ['phase:1', 'governance', 'security', 'decision-needed'],
     title: 'Start the DPIA and processor due diligence (Base44, speech-to-text, LLM)',
-    body: `**Decided (20 October 2026)**: Jennifer Ingledew leads (D4); Base44 standard plan, so data is stored in the US and Base44's terms allow app data to be used for AI training (D2); clinical content deleted after three months (D6). **Still open**: D3 (speech-to-text and LLM providers) and D2a (where transcripts and drafts are stored).
+    body: `**Decided (20 October 2026)**: Jennifer Ingledew leads (D4); Base44 standard plan, so data is stored in the US and Base44's terms allow app data to be used for AI training (D2); clinical content encrypted in Base44 and deleted the next day, with approved notes kept in a controlled clinical history in Aura's Google Workspace (D2a). **Still open**: D3 (speech-to-text and LLM providers) and how long the clinical history is kept (D6).
 
 ${ac([
   'DPIA drafted covering scribe, generation, audit module and staff monitoring',
   'Base44 DPA, sub-processors, backups and breach terms reviewed; the US transfer and the AI-training terms assessed against what Base44 will hold',
+  'Google Workspace data processing terms accepted in the admin console and the data region checked, for the clinical history',
   'STT and LLM providers\' DPAs, regions, retention and training terms reviewed',
   'Privacy notice and signage drafted; permission script agreed',
   'DPIA signed off before any real patient audio (Phase 2 pilot)',
@@ -383,7 +384,8 @@ ${ac([
     body: `${ac([
   'Entities created with deny-all client access rules',
   'Functions enforce session membership and status',
-  'Retention class recorded per row',
+  'Clinical text encrypted before it is stored (AES-GCM, key held as a backend secret, never in the rows), so Base44 never holds it readable (D2a)',
+  'Deleted the day after the session ends, by a scheduled job that records what it deleted',
 ])}`,
   },
 
@@ -545,6 +547,22 @@ ${ac([
 
 ${ac(['Decision recorded', 'If an offline path is approved: two identifiers, reconciliation when Dentally returns, flagged for review'])}`,
   },
+  {
+    id: 'P4-08', milestone: 'P4', labels: ['phase:4', 'security', 'safety-critical'],
+    title: 'Controlled clinical history in Aura\'s Google Workspace',
+    body: `**Decided (D2a, 20 October 2026)**: approved notes are kept in Aura's Google Workspace so the next note can draw on previous visits, because Dentally's API cannot return them (D1). It is a controlled copy, not the record, and not Agent Knowledge.
+
+${ac([
+  'A dedicated shared drive whose only members are the app\'s service account and named administrators; staff see history only through the app',
+  'Google Workspace data processing terms accepted in the admin console; data region checked',
+  'Each approved note filed under the Dentally patient ID and date; no names in file or folder names; transcripts and nurse notes never copied',
+  'History read only for the patient locked to the session; every read and write audited',
+  'History shown to the clinician and the generator as dated previous visits, never as today\'s sources; nothing from history can satisfy a required field (hazard H22)',
+  'Evaluation harness includes history traps (last visit\'s treatment must not appear as done today)',
+  'Notes older than the agreed retention (D6) deleted automatically',
+  'Covered in the DPIA and the patient privacy notice',
+])}`,
+  },
 
   // ---------------------------------------------------------------- Phase 5
   {
@@ -585,7 +603,7 @@ ${ac(['Decision recorded', 'If an offline path is approved: two identifiers, rec
     title: 'Decide the notes data source for historical audit',
     body: `**Blocked**: Dentally exposes no clinical notes through its API (D1).
 
-**Note**: AuraNoteTaker deletes its own copies after three months (D6), so without a Dentally export the audit can only cover notes made through AuraNoteTaker in the last three months.
+**Note**: the controlled clinical history in Aura's Google Workspace (D2a, P4-08) holds every note approved through AuraNoteTaker from go-live, for as long as D6 keeps it. Dentally-native notes would still need a Dentally export.
 
 ${ac(['Source chosen: Dentally API access, official export, or AuraNoteTaker-approved notes only', 'Retention and access controls for any imported notes agreed'])}`,
   },
@@ -619,11 +637,11 @@ ${ac(['Visibility rules decided and implemented', 'Clinicians informed; DPIA cov
     body: `${ac(['Independent penetration test of web app and functions', 'High and critical findings fixed before go-live'])}`,
   },
   {
-    id: 'P7-02', milestone: 'P7', labels: ['phase:7', 'security'],
+    id: 'P7-02', milestone: 'P7', labels: ['phase:7', 'security', 'decision-needed'],
     title: 'Retention policy engine, deletion jobs and legal holds',
-    body: `**Decided (D6, 20 October 2026)**: AuraNoteTaker deletes its clinical content (transcripts, nurse notes, drafts, findings and its copy of approved notes) after three months; the record stays in Dentally. Audio is not stored. Audit events (no clinical content) follow their own period.
+    body: `**Decided (D2a and D6, 20 October 2026)**: Base44 deletes clinical content the day after the session; approved notes last in the clinical history (P4-08); the record stays in Dentally. Audio is not stored. **Open**: the clinical history's retention (proposed two years from each note) and the audit events' period.
 
-${ac(['RetentionPolicy configurable per data class, defaulting to three months for clinical content', 'Scheduled deletion with its own audit record', 'Legal hold suspends deletion', 'Deletion is built and tested before the first real transcript is stored (Phase 2 pilot), not left to Phase 7'])}`,
+${ac(['RetentionPolicy configurable per data class: next day for clinical content in Base44, the agreed period for the clinical history', 'Scheduled deletion with its own audit record', 'Legal hold suspends deletion', 'Next-day deletion is built and tested before the first real transcript is stored (Phase 2 pilot), not left to Phase 7'])}`,
   },
   {
     id: 'P7-03', milestone: 'P7', labels: ['phase:7', 'security'],

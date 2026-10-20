@@ -8,23 +8,23 @@ AuraNoteTaker processes health data, which is special category personal data und
 
 | Class | Examples | Where it may exist |
 |---|---|---|
-| C0 Configuration | Clinic settings, templates, vocabulary | Backend, Google Drive (non-patient knowledge), repository |
+| C0 Configuration | Clinic settings, templates, vocabulary | Backend, Google Drive (Agent Knowledge), repository |
 | C1 Staff | Names, emails, roles, clinician mappings | Backend |
 | C2 Patient identifiers | Dentally patient and appointment IDs | Backend (sessions, audit events) |
-| C3 Patient clinical content | Audio, transcripts, nurse notes, drafts, findings, approved notes, audit findings | Backend clinical store (residency per D2), speech-to-text and LLM providers in transit, the surgery PC's browser while in use |
+| C3 Patient clinical content | Audio, transcripts, nurse notes, drafts, findings, approved notes, audit findings | Base44, encrypted, until the day after the session (D2a); approved notes in the controlled clinical-history shared drive in Aura's Google Workspace; speech-to-text and LLM providers in transit; the surgery PC's browser while in use |
 | C4 Secrets | Dentally token, provider keys | Backend secret vault only |
 
-Never allowed: C3 or C2 in the repository, issues, pull requests, CI logs, screenshots, test fixtures, Google Drive, analytics or error trackers. C4 anywhere except the secret vault.
+Never allowed: C3 or C2 in the repository, issues, pull requests, CI logs, screenshots, test fixtures, analytics or error trackers, or anywhere in Google Drive other than the controlled clinical-history shared drive (which holds approved notes only, never transcripts or nurse notes). C4 anywhere except the secret vault.
 
 ## 2. Data flows and processors
 
 | Party | Role | Data | Status |
 |---|---|---|---|
 | Dentally (Henry Schein One) | Source system of record | Reads C2 and patient display data | Existing processor for Aura |
-| Base44 (Wix) | Backend: auth, database, functions | C1, C2, C3 under Option A or B of D2 | **Due diligence needed**: Enterprise plan for UK residency and training exclusion |
+| Base44 (Wix) | Backend: auth, database, functions | C1, C2; C3 encrypted and only until the next day (D2a) | **Decided (D2)**: standard plan. US servers; its terms allow app data to be used for AI training, which encryption of C3 is there to defeat. DPA and US transfer to be covered in the DPIA |
 | Speech-to-text provider | Transcription | Live audio (C3) | **D3**: Speechmatics or AWS Transcribe, UK or EU processing, zero retention, no training |
 | LLM provider | Draft and review generation | Transcripts, nurse notes, appointment snapshot (C3) | **D3**: Claude on Amazon Bedrock pinned to London (or Ireland) |
-| Google | Drive for non-patient knowledge | C0 only | Existing |
+| Google (Aura's Workspace) | Agent Knowledge; controlled clinical history | C0; approved notes (C3) in the locked-down history shared drive only | Existing. Workspace terms: customer content not used to train AI without permission. Confirm the data processing terms are accepted in the admin console and check the data region |
 | GitHub | Source code | Code only | Existing |
 
 Each processor needs a signed DPA that covers special category data, a sub-processor list with locations, retention and deletion terms, a statement that customer data is not used for training, breach notification terms, and evidence of certification (SOC 2 or ISO 27001). Transfers outside the UK need an adequacy route or the UK International Data Transfer Agreement or Addendum.
@@ -105,14 +105,15 @@ SUPER_ADMIN is a platform role for multi-clinic operation. It has **no access to
 
 ## 7. Retention
 
-**Decided (D6, 20 October 2026):** AuraNoteTaker deletes its clinical content after three months; the record stays in Dentally. The periods are configurable per clinic through `RetentionPolicy` and enforced by a scheduled deletion job that records what it deleted. Deletion must work before the first real transcript is stored (Phase 2 pilot).
+**Decided (D2a and D6, 20 October 2026):** Base44 deletes clinical content the day after the session; the lasting copy of each approved note is the controlled clinical history in Aura's Google Workspace; Dentally keeps the record. The periods are configurable per clinic through `RetentionPolicy` and enforced by a scheduled deletion job that records what it deleted. Deletion must work before the first real transcript is stored (Phase 2 pilot).
 
 | Data | Retention | Rationale |
 |---|---|---|
 | Audio | Not stored. If the Phase 2 spike shows a recovery buffer is needed, deleted once transcribed, 24 hours maximum | Transcript and nurse notes are sufficient inputs |
-| Transcript segments, nurse notes | Three months | Allows review of recent queries; the note in Dentally is the record |
-| Generated drafts, safety findings | Three months | Explains how a note was produced, short term |
-| AuraNoteTaker's copy of approved notes | Three months after entry in Dentally is confirmed | Dentally holds the legal record |
+| Transcript segments, nurse notes | Until the day after the session (Base44, encrypted) | Working material; the approved note is what lasts |
+| Generated drafts, safety findings | Until the day after the session (Base44, encrypted) | The draft-versus-approved lessons are captured, de-identified, at approval |
+| Approved notes in Base44 | Until the day after approval (encrypted) | Copied to the clinical history and entered in Dentally |
+| Clinical history (Google Workspace) | **Open:** proposed two years from each note | Continuity between visits; Dentally holds the full record |
 | Audit events | Aligned with the clinical records retention period | Shows who accessed and changed what |
 | Audit findings | 2 years | Supports trend review without indefinite performance files |
 | Agent Knowledge | While active, plus version history | De-identified, no patient data |

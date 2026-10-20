@@ -38,7 +38,7 @@ flowchart LR
   Dentally[("Dentally API<br/>read-only")]
   STT["Speech-to-text<br/>streaming"]
   LLM["LLM<br/>UK or EU region"]
-  Drive[("Google Drive<br/>non-patient knowledge")]
+  Drive[("Google Workspace<br/>Agent Knowledge and<br/>controlled clinical history")]
 
   UI -- "SSO" --> Auth
   UI -- "invoke" --> Fn
@@ -47,7 +47,7 @@ flowchart LR
   Fn -- "mint short-lived token" --> STT
   UI -- "audio stream" --> STT
   Fn -- "generate and review" --> LLM
-  Fn -. "approved knowledge export" .-> Drive
+  Fn -. "knowledge export; approved notes to history" .-> Drive
   UI --- Outbox
 ```
 
@@ -240,10 +240,15 @@ Design response:
 
 **Decision (20 October 2026):** Base44's standard plan, not Enterprise, with AuraNoteTaker deleting its clinical content after three months (D6); the record stays in Dentally.
 
-What this means, from Base44's privacy page: servers are in the United States, and on every plan except Enterprise "your data can be used to train AI models", with no opt-out setting. Phase 1 is unaffected in substance: Base44 holds staff profiles, settings, and sessions made of Dentally IDs, appointment times and statuses, with no names, dates of birth or clinical text. Phase 2 is where it matters, because transcripts and nurse notes are the most sensitive data the system handles. That choice is **D2a**:
+What this means, from Base44's privacy page: servers are in the United States, and on every plan except Enterprise "your data can be used to train AI models", with no opt-out setting. Phase 1 is unaffected in substance: Base44 holds staff profiles, settings, and sessions made of Dentally IDs, appointment times and statuses, with no names, dates of birth or clinical text.
 
-- **Recommended:** keep transcripts, nurse notes, drafts and findings in AWS London (eu-west-2), next to the AI model that D3 places there anyway, with S3 lifecycle rules deleting them at three months. Base44 keeps identity, roles, settings, sessions and the audit trail. This is option B below with Base44 as the front door.
-- **Alternative:** keep them in Base44 but encrypted with a key Base44 does not store with the data, so what Base44 holds is unreadable. Simpler to host, weaker than not storing it there at all.
+**D2a, decided the same day:** clinical content spends as little time in Base44 as possible, and what needs to last lives in Aura's own Google Workspace (`auradentalclinic.co.uk`), whose terms say customer content is not used to train AI models without permission.
+
+- **Base44:** transcripts, nurse notes, drafts and findings are encrypted before they are stored (AES-GCM, key held as a backend secret, never in the same rows), so stored text is unreadable to the platform, and they are deleted the day after the session ends.
+- **Google Workspace, Agent Knowledge:** de-identified lessons on how notes are written ([agent-knowledge.md](agent-knowledge.md)). No patient details.
+- **Google Workspace, clinical history:** a separate, locked-down shared drive holding each approved note, filed under the Dentally patient ID and date (no names in file or folder names). Only the app's service account and named administrators are members; staff see history through the app, for the patient locked to their session, and every read is audited. It exists because Dentally's API cannot return previous notes (D1). It is a controlled copy, not the record: Dentally remains the record.
+
+Earlier options (AWS London storage, or encrypted storage in Base44 alone) were considered and not chosen.
 
 The analysis that led to the original recommendation is kept below for the DPIA.
 
@@ -325,4 +330,4 @@ auranotetaker-pro/
 | A11 | No realtime push in Phase 1. The diary is polled (every minute while visible, every five while hidden, at once on return). Session state is fetched when the screen loads, when its setup changes and after any conflict; changes made on another screen are caught by version checks, which ask the user to reload | Dentally offers no change feed; polling survives browser throttling; one screen per surgery in Phase 1. Base44 realtime subscriptions are the candidate for session state shared across screens (spec section 16) in Phase 2 | Two screens need to work on one session live (nurse and dentist), or Dentally adds webhooks |
 | A12 | The confirmation audit record is written before the session is created, with a compensating record if creation fails; later changes are audited straight after, with retries, and the user is told if that fails | Base44 has no multi-entity transactions; a session must never exist without its confirmation record | Phase 4 transactional outbox (P4-04) |
 | A13 | Predictions use the server's clock and the clinic's settings | A surgery PC's clock can be wrong; the screen and the server must suggest the same patient | Never |
-| A14 | Base44 standard plan (D2); clinical content deleted after three months (D6) | Hisham's decision on cost and simplicity; Dentally holds the record | D2a, the DPIA, or Base44 changing its terms |
+| A14 | Base44 standard plan (D2); clinical content encrypted there and deleted the next day; Agent Knowledge and a controlled clinical history in Aura's Google Workspace (D2a) | Hisham's decision on cost and simplicity; Dentally holds the record; Workspace terms exclude AI training on customer content | The DPIA, or either platform changing its terms |

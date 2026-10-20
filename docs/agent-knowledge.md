@@ -86,7 +86,9 @@ AuraNoteTaker Pro/
 - Access restricted to a named group (clinical lead, practice manager, developers).
 - **App to Drive:** approved versions are exported as read-only documents with version numbers.
 - **Drive to app:** edits made in Drive become *proposals* in the app's approval queue. They never go live directly.
-- Identifiable information needed for legitimate operational reasons (for example a complaint investigation) stays in the clinical store under access control and retention, never in Drive.
+- Identifiable information never goes into the Agent Knowledge folders.
+
+**Clinical history is separate (D2a).** Approved notes are also kept, for continuity between visits, in a different, locked-down shared drive in Aura's Google Workspace: `AuraNoteTaker Clinical History/`, one folder per Dentally patient ID, one file per approved note. It is the "separately controlled storage area" the spec allows for identifiable information kept for a legitimate purpose. It is not Agent Knowledge, it is never used to derive lessons directly, and only the app and named administrators can open it. Learning uses the de-identified draft-versus-approved differences captured at approval time.
 
 ## 6. Clinician preferences
 
