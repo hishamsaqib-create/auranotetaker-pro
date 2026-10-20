@@ -1,0 +1,16 @@
+// The clinic's own note templates. Wording only: never patient data. Starter templates are built into the
+// app (lib/core/noteTemplates.ts) and are not stored. Read and written only by backend functions.
+{
+  "name": "NoteTemplate",
+  "type": "object",
+  "properties": {
+    "clinic_id": { "type": "string" },
+    "title": { "type": "string", "maxLength": 80 },
+    "body": { "type": "string", "maxLength": 10000, "description": "Text with blanks: [Tooth] or [Consent: verbal / written]" },
+    "active": { "type": "boolean" },
+    "updated_by_email": { "type": "string", "format": "email" },
+    "updated_at": { "type": "string", "format": "date-time" }
+  },
+  "required": ["clinic_id", "title", "body", "active", "updated_by_email", "updated_at"],
+  "rls": { "create": false, "read": false, "update": false, "delete": false }
+}

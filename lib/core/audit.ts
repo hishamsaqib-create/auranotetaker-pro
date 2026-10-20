@@ -70,9 +70,11 @@ export const AUDIT_DETAIL_RULES = {
   // Transcript and nurse-note text never appears here: only what happened and how many records.
   SCRIBE_CONTENT_VIEWED: { purpose: oneOf('RESTORE'), segmentCount: isCount, hasNurseNote: isBool },
   SCRIBE_CONTENT_DELETED: { reasonCode: isCode, count: isCount },
+  // A finished note was copied for pasting into Dentally. Never the text: which template and how many blanks were left.
+  NOTE_COPIED: { templateId: nullable(isId), unfilledCount: isCount, source: oneOf('SESSION', 'STANDALONE') },
   // Configuration only (clinic, staff profiles, clinicians, surgeries): counts, never names or emails.
   CONFIG_CHANGED: {
-    entity: oneOf('CLINIC', 'STAFF_PROFILE', 'CLINICIAN', 'SURGERY'),
+    entity: oneOf('CLINIC', 'STAFF_PROFILE', 'CLINICIAN', 'SURGERY', 'NOTE_TEMPLATE'),
     change: oneOf('BOOTSTRAPPED', 'CREATED', 'UPDATED', 'SAVED'),
     count: isCount,
   },

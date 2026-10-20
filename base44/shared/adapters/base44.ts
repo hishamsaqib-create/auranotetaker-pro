@@ -18,6 +18,7 @@
 // They are never read from the Base44 user record, because users can edit their own custom user fields.
 
 import type { AuditEvent } from '../lib/core/audit.ts';
+import type { NoteTemplate } from '../lib/core/noteTemplates.ts';
 import type { ScribeSession } from '../lib/core/session.ts';
 import { KNOWN_APPOINTMENT_STATES } from '../lib/core/appointments.ts';
 import { isTerminal } from '../lib/core/session.ts';
@@ -424,7 +425,7 @@ function rowToStaff(r: Row): StaffProfileRecord {
 export class Base44ClinicDirectory implements ClinicDirectory, ClinicAdminStore {
   constructor(private readonly base44: Base44Like) {}
 
-  private entity(name: 'Clinician' | 'Surgery' | 'StaffProfile'): EntityApi {
+  private entity(name: 'Clinician' | 'Surgery' | 'StaffProfile' | 'NoteTemplate'): EntityApi {
     return this.base44.asServiceRole.entities[name]!;
   }
 
@@ -475,6 +476,32 @@ export class Base44ClinicDirectory implements ClinicDirectory, ClinicAdminStore 
       if (existing[0]?.id) await this.entity('Surgery').update(existing[0].id, data);
       else await this.entity('Surgery').create(data);
     }
+  }
+
+  async listNoteTemplates(clinicId: string): Promise<NoteTemplate[]> {
+    return (await allRows(this.entity('NoteTemplate'), { clinic_id: clinicId })).map((r) => {
+      const templateId = str(r.id);
+      const title = str(r.title);
+      const body = typeof r.body === 'string' ? r.body : null;
+      if (!templateId || !title || body === null || typeof r.active !== 'boolean') throw new AppError('INTERNAL', UNREADABLE);
+      return { templateId, title, body, active: r.active, starter: false, updatedBy: str(r.updated_by_email), updatedAtMs: isoToMs(r.updated_at) };
+    });
+  }
+
+  async saveNoteTemplate(
+    clinicId: string,
+    t: { templateId: string | null; title: string; body: string; active: boolean; updatedBy: string; updatedAtMs: number },
+  ): Promise<string> {
+    const data = { clinic_id: clinicId, title: t.title, body: t.body, active: t.active, updated_by_email: t.updatedBy, updated_at: msToIso(t.updatedAtMs) };
+    if (t.templateId) {
+      const mine = (await allRows(this.entity('NoteTemplate'), { clinic_id: clinicId })).find((x) => x.id === t.templateId);
+      if (!mine?.id) throw new AppError('NOT_FOUND', 'That template no longer exists. Refresh the page.');
+      await this.entity('NoteTemplate').update(mine.id, data);
+      return mine.id;
+    }
+    const created = await this.entity('NoteTemplate').create(data);
+    if (!created.id) throw new AppError('INTERNAL', UNREADABLE);
+    return created.id;
   }
 
   async listStaff(clinicId: string): Promise<StaffProfileRecord[]> {

@@ -19,6 +19,9 @@ import {
   getPatientSummary,
   getClinicSetup,
   getDentallyCheck,
+  listNoteTemplates,
+  recordNoteCopied,
+  saveNoteTemplate,
   getSessionPatient,
   recordConsent,
   saveClinicians,
@@ -763,5 +766,54 @@ describe('getDentallyCheck', () => {
     expect(Object.values(r.byPractitioner).reduce((a, b) => a + b, 0)).toBe(r.total);
     expect(JSON.stringify(r)).not.toMatch(/Oliver|Bennett|DEMO-P1/);
     await expectAppError(getDentallyCheck(nurse, d), 'FORBIDDEN');
+  });
+});
+
+describe('note templates and copied notes', () => {
+  it('lists the starters for everyone, and lets the practice manager add, edit and switch off the clinic\'s own', async () => {
+    const d = deps();
+    const first = await listNoteTemplates(dentist, d);
+    expect(first.templates.every((t) => t.starter)).toBe(true);
+    await expectAppError(saveNoteTemplate(dentist, d, { title: 'Root canal', body: 'RCT [Tooth]' }), 'FORBIDDEN');
+    const created = await saveNoteTemplate(manager, d, { title: 'Root canal', body: 'RCT [Tooth]\nWL: [Working length]' });
+    expect(created.templates[0]).toMatchObject({ title: 'Root canal', starter: false, updatedBy: manager.email });
+    await saveNoteTemplate(manager, d, { templateId: created.templateId, title: 'Root canal', body: 'RCT [Tooth]', active: false });
+    expect((await listNoteTemplates(dentist, d)).templates.some((t) => t.templateId === created.templateId)).toBe(false);
+    expect((await listNoteTemplates(dentist, d, { includeInactive: true })).templates.find((t) => t.templateId === created.templateId)!.active).toBe(false);
+    expect(auditSink.events.filter((e) => e.action === 'CONFIG_CHANGED').map((e) => e.details)).toEqual([
+      { entity: 'NOTE_TEMPLATE', change: 'CREATED', count: 1 },
+      { entity: 'NOTE_TEMPLATE', change: 'UPDATED', count: 1 },
+    ]);
+  });
+
+  it('refuses changes to starters, duplicate names, bad text and roles without access', async () => {
+    const d = deps();
+    await expectAppError(saveNoteTemplate(manager, d, { templateId: 'starter-examination', title: 'Mine', body: 'x' }), 'VALIDATION');
+    await saveNoteTemplate(manager, d, { title: 'Recall', body: 'x' });
+    await expectAppError(saveNoteTemplate(manager, d, { title: 'recall', body: 'y' }), 'VALIDATION');
+    await expectAppError(saveNoteTemplate(manager, d, { title: 'Empty', body: '  ' }), 'VALIDATION');
+    await expectAppError(saveNoteTemplate(manager, d, { templateId: 'NOPE', title: 'Gone', body: 'x' }), 'NOT_FOUND');
+    await expectAppError(saveNoteTemplate(auditor, d, { title: 'Nope', body: 'x' }), 'FORBIDDEN');
+  });
+
+  it('audits a copied note against the session patient, never with its text', async () => {
+    const d = deps();
+    const { session } = await confirmPatient(nurse, d, confirmInput);
+    await recordNoteCopied(nurse, d, { sessionId: session.sessionId, templateId: 'starter-composite', unfilledCount: 1 });
+    expect(auditSink.events.at(-1)).toMatchObject({
+      action: 'NOTE_COPIED',
+      sessionId: session.sessionId,
+      dentallyPatientId: 'DEMO-P1001',
+      details: { templateId: 'starter-composite', unfilledCount: 1, source: 'SESSION' },
+    });
+    await recordNoteCopied(dentist, d, { sessionId: null, templateId: null, unfilledCount: 0 });
+    expect(auditSink.events.at(-1)).toMatchObject({ action: 'NOTE_COPIED', dentallyPatientId: null, details: { source: 'STANDALONE' } });
+    await expectAppError(recordNoteCopied(otherNurse, d, { sessionId: session.sessionId, templateId: null, unfilledCount: 0 }), 'FORBIDDEN');
+    // Still allowed after a decline (notes by hand need no permission for the scribe); refused once cancelled.
+    const declined = await recordConsent(nurse, d, { sessionId: session.sessionId, given: false, expectedVersion: session.version, surgeryId: 'surgery-1' });
+    await recordNoteCopied(nurse, d, { sessionId: declined.session.sessionId, templateId: null, unfilledCount: 0 });
+    const other = (await confirmPatient(nurse, d, amara)).session;
+    await cancelSession(nurse, d, { sessionId: other.sessionId, expectedVersion: other.version });
+    await expectAppError(recordNoteCopied(nurse, d, { sessionId: other.sessionId, templateId: null, unfilledCount: 0 }), 'SESSION_TRANSITION_REFUSED');
   });
 });

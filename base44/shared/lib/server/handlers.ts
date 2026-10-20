@@ -16,6 +16,8 @@ import { predictLikelyPatient } from '../core/prediction.ts';
 import type { ConfirmationMethod, ScribeSession, SessionEvent } from '../core/session.ts';
 import { createSession, isTerminal, transition } from '../core/session.ts';
 import { zonedDateString } from '../core/time.ts';
+import type { NoteTemplate } from '../core/noteTemplates.ts';
+import { checkTemplate, STARTER_TEMPLATES } from '../core/noteTemplates.ts';
 import type { NurseNote, TranscriptSegment } from '../core/transcript.ts';
 import { contentDeleteAfterMs, orderSegments, validateNurseNoteText, validateSegments } from '../core/transcript.ts';
 import { DentallyError } from '../dentally/client.ts';
@@ -765,6 +767,93 @@ export async function getDentallyCheck(ctx: StaffContext, deps: HandlerDeps): Pr
     byRoom[room] = (byRoom[room] ?? 0) + 1;
   }
   return { date, total: diary.appointments.length, rejected: diary.rejectedCount, byPractitioner, byRoom, practitioners };
+}
+
+// ---------------------------------------------------------------------------
+// Note templates and copied notes. Templates hold no patient data. A finished note is written in the browser
+// and copied into Dentally by the clinician; AuraNoteTaker does not store it and never writes to Dentally.
+
+export interface NoteTemplatesResponse {
+  /** The clinic's own templates first (active ones only unless asked), then the starters. */
+  templates: NoteTemplate[];
+}
+
+const TEMPLATE_ROLES: readonly AppRole[] = [...CLINICAL_ROLES, 'CLINIC_ADMIN'];
+
+export async function listNoteTemplates(ctx: StaffContext, deps: HandlerDeps, input: { includeInactive?: unknown } = {}): Promise<NoteTemplatesResponse> {
+  await requireRole(ctx, deps, TEMPLATE_ROLES, 'listNoteTemplates');
+  const includeInactive = optBool(input.includeInactive, 'includeInactive');
+  const own = (await deps.admin.listNoteTemplates(deps.clinic.clinicId))
+    .filter((t) => includeInactive || t.active)
+    .sort((a, b) => a.title.localeCompare(b.title, 'en-GB'));
+  return { templates: [...own, ...STARTER_TEMPLATES.map((t) => ({ ...t }))] };
+}
+
+/** Practice manager: creates (no templateId) or updates one of the clinic's templates. Starters cannot be changed, only copied. */
+export async function saveNoteTemplate(
+  ctx: StaffContext,
+  deps: HandlerDeps,
+  input: { templateId?: unknown; title?: unknown; body?: unknown; active?: unknown },
+): Promise<NoteTemplatesResponse & { templateId: string }> {
+  // The clinic's wording for clinical records: changed by the practice manager, used by everyone.
+  await requireRole(ctx, deps, ['CLINIC_ADMIN'], 'saveNoteTemplate');
+  const templateId = optId(input.templateId, 'template');
+  if (templateId && STARTER_TEMPLATES.some((t) => t.templateId === templateId)) {
+    throw new AppError('VALIDATION', 'Starter templates cannot be changed. Make your own copy instead.');
+  }
+  const checked = checkTemplate(input.title, input.body);
+  if (!checked.ok) throw new AppError('VALIDATION', checked.message);
+  const active = input.active === undefined ? true : reqBool(input.active, 'active');
+  const existing = await deps.admin.listNoteTemplates(deps.clinic.clinicId);
+  if (templateId && !existing.some((t) => t.templateId === templateId)) {
+    throw new AppError('NOT_FOUND', 'That template no longer exists. Refresh the page.');
+  }
+  if (existing.some((t) => t.templateId !== templateId && t.active && t.title.toLowerCase() === checked.title.toLowerCase())) {
+    throw new AppError('VALIDATION', `There is already a template called ${checked.title}.`);
+  }
+  const savedId = await deps.admin.saveNoteTemplate(deps.clinic.clinicId, {
+    templateId,
+    title: checked.title,
+    body: checked.body,
+    active,
+    updatedBy: ctx.email,
+    updatedAtMs: deps.clock(),
+  });
+  await auditAfterChange(ctx, deps, 'CONFIG_CHANGED', {
+    details: { entity: 'NOTE_TEMPLATE', change: templateId ? 'UPDATED' : 'CREATED', count: 1 },
+  });
+  return { ...(await listNoteTemplates(ctx, deps, { includeInactive: true })), templateId: savedId };
+}
+
+/**
+ * Records that a finished note was copied for Dentally, for the audit trail. With a session, the session's
+ * locked patient is recorded (by ID); the note text never is.
+ */
+export async function recordNoteCopied(
+  ctx: StaffContext,
+  deps: HandlerDeps,
+  input: { sessionId?: unknown; templateId?: unknown; unfilledCount?: unknown },
+): Promise<{ recorded: true }> {
+  await requireRole(ctx, deps, CLINICAL_ROLES, 'recordNoteCopied');
+  const templateId = optId(input.templateId, 'template');
+  const unfilledCount = reqCount(input.unfilledCount, 'unfilled count');
+  const sessionId = optId(input.sessionId, 'session');
+  const session = sessionId ? await loadSession(ctx, deps, sessionId) : null;
+  if (session && !isSessionMember(ctx, session)) {
+    await audit(ctx, deps, 'ACCESS_DENIED', { sessionId, details: { operation: 'recordNoteCopied', reasonCode: 'NOT_SESSION_MEMBER' } });
+    throw new AppError('FORBIDDEN', 'Only the person who confirmed this patient, or the treating clinician, can write their note here.');
+  }
+  // A note against a session is for today's patient in a session still in use (or one the patient declined).
+  if (session && ((isTerminal(session.status) && session.status !== 'CONSENT_DECLINED') || !sessionIsToday(session, deps.clock(), deps.clinic.timeZone))) {
+    throw new AppError('SESSION_TRANSITION_REFUSED', 'This session is closed or from an earlier day. Write the note from "Write a note" and check the patient in Dentally.');
+  }
+  await audit(ctx, deps, 'NOTE_COPIED', {
+    sessionId: session?.sessionId ?? null,
+    dentallyPatientId: session?.patient.dentallyPatientId ?? null,
+    dentallyAppointmentId: session?.patient.appointment.appointmentId ?? null,
+    details: { templateId, unfilledCount, source: session ? 'SESSION' : 'STANDALONE' },
+  });
+  return { recorded: true };
 }
 
 /** Connection status for the header. No patient data. */
