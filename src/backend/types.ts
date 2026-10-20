@@ -7,6 +7,7 @@ import type {
   ActiveSessionResponse,
   ClinicSetupResponse,
   ConfirmPatientResponse,
+  ConnectionChecksResponse,
   GenerateNoteResponse,
   DentallyCheckResponse,
   DiaryResponse,
@@ -76,6 +77,8 @@ export interface AppBackend {
   recordNoteCopied(input: { sessionId: string | null; templateId: string | null; unfilledCount: number; aiDraft: boolean }): Promise<{ recorded: true }>;
   /** Drafts the session's note with AI from its transcript, nurse notes and the clinician's own notes. */
   generateNote(input: { sessionId: string; surgeryId: string; templateId: string | null; clinicianNotes: string; lastSeq: number }): Promise<GenerateNoteResponse>;
+  /** Practice manager: tests the AI and speech-to-text keys with a message holding no patient data. */
+  checkConnections(): Promise<ConnectionChecksResponse>;
   /** Practice manager: today's Dentally diary counted by practitioner and room ID (no patient data). */
   getDentallyCheck(): Promise<DentallyCheckResponse>;
   changeRecording(sessionId: string, surgeryId: string, action: RecordingAction, expectedVersion: number): Promise<RecordingResponse>;

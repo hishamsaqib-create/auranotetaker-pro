@@ -433,9 +433,58 @@ export function AdminScreen({
         </div>
       </section>
 
+      <ConnectionChecks backend={backend} />
+
       <section className="setup-group" aria-label="Note templates">
         <TemplateManager backend={backend} />
       </section>
     </main>
+  );
+}
+
+const RESULT_TEXT: Record<string, string> = {
+  CONNECTED: 'Working',
+  NOT_CONFIGURED: 'No key set up. Add it in Base44 Secrets.',
+  KEY_REJECTED: 'The key was rejected. Check it is the right kind of key and has not been deleted.',
+  UNAVAILABLE: 'Not responding. Try again shortly.',
+};
+
+/** Tests the AI and speech-to-text keys on request. No patient data is sent. */
+function ConnectionChecks({ backend }: { backend: AppBackend }) {
+  const [result, setResult] = useState<Awaited<ReturnType<AppBackend['checkConnections']>> | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  async function run() {
+    setBusy(true);
+    setError(null);
+    try {
+      setResult(await backend.checkConnections());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'The check did not run.');
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <section className="setup-group" aria-labelledby="connections-heading">
+      <h2 id="connections-heading">Connections</h2>
+      <p className="setup-lead">Checks the AI (for drafting notes) and speech-to-text (for recording) with a test message. No patient data is sent.</p>
+      {error && <Notice tone="bad" title={error} />}
+      {result && (
+        <ul className="admin-list">
+          {([['AI for drafting notes', result.ai], ['Speech-to-text', result.speech]] as const).map(([label, r]) => (
+            <li key={label} className="admin-row">
+              <span>
+                <strong>{label}</strong> <span className="admin-sub">{r.provider === 'DEMO' ? 'demo' : r.provider === 'ANTHROPIC' ? 'Anthropic' : 'Speechmatics'}</span>
+              </span>
+              <span className={r.result === 'CONNECTED' ? 'tag' : 'tag tag-warn'}>{RESULT_TEXT[r.result] ?? r.result}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      <button type="button" className="button button-secondary" disabled={busy} onClick={() => void run()}>
+        {busy ? 'Checking…' : 'Check connections'}
+      </button>
+    </section>
   );
 }

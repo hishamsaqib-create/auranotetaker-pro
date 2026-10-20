@@ -18,6 +18,7 @@ import {
   getDiary,
   getPatientSummary,
   getClinicSetup,
+  checkConnections,
   generateNote,
   getDentallyCheck,
   getMe,
@@ -954,5 +955,19 @@ describe('team members', () => {
     const r = await saveStaffProfile(manager, d, { email: 'a@aura.test', displayName: 'A', roles: ['DENTIST'], clinicianId: null, active: true, invite: true });
     expect(r.invite).toBe('FAILED');
     expect(r.staff.some((x) => x.email === 'a@aura.test')).toBe(true);
+  });
+});
+
+describe('checkConnections', () => {
+  it('reports each service plainly, for the practice manager only, with no patient data sent', async () => {
+    const prompts: string[] = [];
+    const d = { ...deps(), notes: { provider: 'ANTHROPIC' as const, generate: async (i: { prompt: string }) => (prompts.push(i.prompt), { text: 'OK', model: 'm' }) } };
+    expect(await checkConnections(manager, d)).toMatchObject({ ai: { result: 'CONNECTED' }, speech: { result: 'CONNECTED', provider: 'DEMO' } });
+    expect(prompts).toEqual(['Connection test.']);
+    await expectAppError(checkConnections(dentist, d), 'FORBIDDEN');
+    for (const [kind, result] of [['AUTH', 'KEY_REJECTED'], ['NOT_CONFIGURED', 'NOT_CONFIGURED'], ['UNAVAILABLE', 'UNAVAILABLE'], ['INCOMPLETE', 'CONNECTED']] as const) {
+      const failing = { provider: 'ANTHROPIC' as const, generate: async () => Promise.reject(new NoteGeneratorError(kind)) };
+      expect((await checkConnections(manager, { ...d, notes: failing })).ai.result).toBe(result);
+    }
   });
 });

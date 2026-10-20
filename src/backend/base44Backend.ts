@@ -102,6 +102,7 @@ export function createBase44Backend(cfg: { appId: string; serverUrl?: string }):
     saveSurgeries: (surgeries) => call('saveSurgeries', { surgeries }),
     saveStaffProfile: (profile) => call('saveStaffProfile', { ...profile }),
     getDentallyCheck: () => call('getDentallyCheck'),
+    checkConnections: () => call('checkConnections', {}, 75_000),
     listNoteTemplates: (includeInactive = false) => call('listNoteTemplates', { includeInactive }),
     saveNoteTemplate: (t) => call('saveNoteTemplate', { ...t }),
     recordNoteCopied: (input) => call('recordNoteCopied', { ...input }),

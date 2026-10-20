@@ -962,6 +962,47 @@ export async function generateNote(
   return { draft, provider: deps.notes.provider, model: result.model };
 }
 
+export type ConnectionResult = 'CONNECTED' | 'NOT_CONFIGURED' | 'KEY_REJECTED' | 'UNAVAILABLE';
+
+export interface ConnectionChecksResponse {
+  ai: { result: ConnectionResult; provider: string; latencyMs: number | null };
+  speech: { result: ConnectionResult; provider: string; latencyMs: number | null };
+}
+
+/**
+ * Practice manager: checks that the AI and speech-to-text keys work, with a test message that holds no patient
+ * data (the AI is asked to reply "OK"; speech-to-text issues a one-minute key that is never used).
+ */
+export async function checkConnections(ctx: StaffContext, deps: HandlerDeps): Promise<ConnectionChecksResponse> {
+  await requireRole(ctx, deps, ['CLINIC_ADMIN'], 'checkConnections');
+  const time = async (fn: () => Promise<unknown>, kindOf: (err: unknown) => string | null) => {
+    const started = deps.clock();
+    const ok = () => ({ result: 'CONNECTED' as ConnectionResult, latencyMs: Math.max(0, deps.clock() - started) });
+    try {
+      await fn();
+      return ok();
+    } catch (err) {
+      const kind = kindOf(err);
+      // The service answered (a reply cut short by the tiny limit, or a refusal): the key works.
+      if (kind === 'ANSWERED') return ok();
+      const result: ConnectionResult = kind === 'NOT_CONFIGURED' ? 'NOT_CONFIGURED' : kind === 'AUTH' ? 'KEY_REJECTED' : 'UNAVAILABLE';
+      return { result, latencyMs: null };
+    }
+  };
+  const ai = await time(
+    () => deps.notes.generate({ system: 'This is a connection test. Reply with the single word OK.', prompt: 'Connection test.', maxTokens: 5 }),
+    (err) => (err instanceof NoteGeneratorError ? (err.kind === 'INCOMPLETE' || err.kind === 'REFUSED' ? 'ANSWERED' : err.kind) : null),
+  );
+  const speech = await time(
+    () => deps.speech.issue(),
+    (err) => (err instanceof SpeechServiceError ? err.kind : null),
+  );
+  for (const [integration, r] of [['LLM', ai], ['STT', speech]] as const) {
+    await audit(ctx, deps, 'INTEGRATION_CHECKED', { details: { integration, result: r.result, latencyMs: r.latencyMs ?? 0 } });
+  }
+  return { ai: { ...ai, provider: deps.notes.provider }, speech: { ...speech, provider: deps.speech.provider } };
+}
+
 /** Connection status for the header. No patient data. */
 export async function getDentallyStatus(ctx: StaffContext, deps: HandlerDeps): Promise<DentallyStatusResponse> {
   await requireRole(ctx, deps, [...CLINICAL_ROLES, 'CLINIC_ADMIN'], 'getDentallyStatus');
