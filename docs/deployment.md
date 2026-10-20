@@ -26,7 +26,7 @@ npm run build
 npm run sync:shared  # copy lib/ into base44/shared/lib/ (CI checks it)
 ```
 
-Demo mode shows a permanent amber banner and lets you switch scenarios (normal day, double booking, overrun, between appointments, taken in early, Dentally offline) to exercise the prediction engine.
+Demo mode shows a permanent banner and lets you switch scenarios (normal day, double booking, overrun, previous appointment not marked complete, between appointments, taken in early, Dentally offline) to exercise the prediction engine. The development server defaults to demo mode; a production build must set `VITE_APP_MODE` (section 4).
 
 ## 3. First-time backend setup (once D2 and D8 are settled)
 
@@ -51,14 +51,20 @@ Demo mode shows a permanent amber banner and lets you switch scenarios (normal d
    npx base44 secrets set DENTALLY_API_TOKEN=...      # sandbox in staging, production only in prod
    npx base44 secrets set CLINIC_KEY=aura
    ```
-5. Deploy:
+5. Frontend build settings. Create `.env.production.local` (git-ignored; these values are not secret):
+   ```bash
+   VITE_APP_MODE=base44
+   VITE_BASE44_APP_ID=<the staging or production app ID>
+   ```
+   Without `VITE_APP_MODE` a production build shows a configuration error instead of starting, so a forgotten setting can never put the demo diary in front of a clinician.
+6. Deploy:
    ```bash
    npm run sync:shared
    npx base44 entities push
    npx base44 functions deploy
-   npx base44 deploy --build -y     # builds through the CLI so the app ID is injected
+   npx base44 deploy --build -y     # check that the CLI build picks up .env.production.local
    ```
-6. Seed configuration through the admin functions (Phase 1 issue P1-05): the Clinic row, staff profiles with roles, clinician mappings from Dentally practitioners, surgeries from Dentally rooms.
+7. Seed configuration through the admin functions (Phase 1 issue P1-05): the Clinic row (its `slug` must equal `CLINIC_KEY`), staff profiles with roles, clinician mappings from Dentally practitioners, surgeries from Dentally rooms.
 
 ## 4. Configuration reference
 
@@ -66,7 +72,7 @@ Frontend (Vite, build time, not secret):
 
 | Variable | Values | Purpose |
 |---|---|---|
-| `VITE_APP_MODE` | `demo` (default), `base44` | Demo or connected mode |
+| `VITE_APP_MODE` | `demo`, `base44` | Demo or connected mode. Required for production builds; only the development server defaults to `demo` |
 | `VITE_BASE44_APP_ID` | Base44 app ID | Required in `base44` mode |
 | `VITE_BASE44_SERVER_URL` | optional | Override the Base44 server URL |
 
@@ -77,14 +83,14 @@ Backend secrets (Base44 secret vault):
 | `DENTALLY_API_TOKEN` | 1 | Dedicated, read-only |
 | `DENTALLY_BASE_URL` | 1 | Sandbox or production |
 | `DENTALLY_USER_AGENT` | 1 | Mandatory for Dentally |
-| `CLINIC_KEY` | 1 | Tenant key for single-tenant deployments |
+| `CLINIC_KEY` | 1 | The one clinic this app serves (matches `Clinic.slug`). Callers must have an active StaffProfile in it |
 | `STT_*` | 2 | Provider credentials, per D3 |
 | `LLM_*` / AWS role | 3 | Bedrock access pinned to one region, per D3 |
 | `GOOGLE_DRIVE_*` | 5 | Non-patient knowledge export |
 
 ## 5. Continuous integration
 
-`.github/workflows/ci.yml` runs on every push and pull request: install, typecheck, tests, production build, the shared-code sync check, and a secret scan. Merges to `main` require green CI and a review. Pull requests use the safety checklist in `.github/pull_request_template.md`.
+`.github/workflows/ci.yml` runs on pushes to `main` and on every pull request: install, typecheck, tests, production build, the shared-code sync check, and a secret scan. Merges to `main` require green CI and a review. Pull requests use the safety checklist in `.github/pull_request_template.md`.
 
 ## 6. Releases
 
@@ -97,7 +103,9 @@ Feature flags per clinic (in `Clinic.settings`): scribe enabled, `writeback_mode
 
 ## 7. Content Security Policy
 
-The production build injects a strict Content Security Policy (see `vite.config.ts`): scripts and styles from the app's own origin only, connections to the app origin and `base44.app`, no objects, no framing. Phase 2 adds the chosen speech-to-text provider's streaming endpoint to `connect-src`. Development builds omit it so Vite's hot reload works.
+The production build injects a strict Content Security Policy as a `<meta>` tag (see `vite.config.ts`): scripts and styles from the app's own origin only, connections to the app origin and `base44.app`, no objects. Phase 2 adds the chosen speech-to-text provider's streaming endpoint to `connect-src`. Development builds omit it so Vite's hot reload works.
+
+Framing cannot be blocked from a `<meta>` tag: browsers ignore `frame-ancestors` there. The host must send it as an HTTP header, `Content-Security-Policy: frame-ancestors 'none'` (or `X-Frame-Options: DENY`). Whether Base44 hosting can add response headers is to be confirmed in P1-01; if it cannot, the frontend should be served from a host that can. Meanwhile the connected app refuses to start inside a frame. The demo build may be framed, because it holds only fictional data.
 
 ## 8. Surgery PC checklist
 

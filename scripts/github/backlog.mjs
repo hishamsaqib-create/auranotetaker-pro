@@ -138,11 +138,16 @@ ${ac([
 **Status**: implemented in \`lib/core/prediction.ts\` with tests in \`lib/core/prediction.test.ts\`. Remaining: tune windows with real diary data after P1-03.
 
 ${ac([
-  'Returns LIKELY (HIGH/MEDIUM), AMBIGUOUS or NONE with reasons and warnings',
+  'Returns LIKELY (HIGH/MEDIUM), AMBIGUOUS or NONE with reasons and warnings; the screen shows the warnings in every state',
   'Two patients booked at the same time gives AMBIGUOUS with no default',
-  'Overrun into the next appointment gives AMBIGUOUS, with the overrunning patient explained',
-  'Cancelled, did-not-attend, completed and patient-less appointments are never suggested',
+  'Previous patient still In surgery after the next appointment has started gives AMBIGUOUS',
+  'Another appointment that may still be running (not completed, or In surgery) caps the suggestion at MEDIUM and the warning names it',
+  'A current appointment with low confidence is shown for checking, never replaced by the next patient',
+  '"In surgery" well past the finish time is treated as possibly stale after 30 minutes and ignored after 120',
+  'Two different bookings under one appointment ID are both dropped with a warning',
+  'Cancelled, did-not-attend, completed and patient-less appointments are never suggested, nor are appointments already finished with in AuraNoteTaker today',
   'Different surgery lowers confidence; unrecognised Dentally state lowers confidence and warns',
+  'Uses the clinic\'s prediction settings and the server\'s clock',
   'Correct across clock changes (late March and late October)',
 ])}`,
   },
@@ -154,9 +159,13 @@ ${ac([
 **Status**: \`confirmPatient\`, \`recordConsent\` and \`cancelSession\` handlers and the session state machine implemented and tested. Remaining: Base44 repositories against a real app.
 
 ${ac([
-  'Server re-fetches the appointment and refuses on patient mismatch, cancelled or did-not-attend, not today, or another active session in the surgery',
+  'Server re-fetches the appointment and the patient, and refuses on patient mismatch, cancelled or did-not-attend, not today, or another open session in the surgery, for the patient or for the clinician',
+  'Returns the identity it verified, which is what the screen then shows',
   'Session created with locked patient, appointment snapshot and confirmation method',
-  'Audit event records predicted versus chosen appointment',
+  'Confirmation audit record (predicted versus chosen, plus the server\'s own prediction) written before the session exists; simultaneous confirmations leave exactly one session',
+  'Confirming a patient who declined earlier in the appointment needs an explicit, audited acknowledgement',
+  'Only the person who confirmed the patient or the treating clinician, in the session\'s surgery and on the same day, can record the patient\'s answer',
+  'An earlier day\'s session with nothing recorded is closed automatically; a session from another surgery, an earlier day or another user offers only Cancel',
   'Session updates use optimistic concurrency',
 ])}`,
   },
@@ -170,10 +179,12 @@ ${ac([
 ${ac([
   'Header: product name, clinician, surgery, live clock, Dentally status, microphone status',
   'Likely patient card: name, DOB, Dentally ID, time, appointment type, clinician, confidence and reasons',
-  'Confirm button names the patient; disabled for 1.5 s when the suggestion changes',
+  'Confirm button names the patient; disabled for 1.5 s when the suggestion changes, including a quick change away and back',
+  'Confirm stays disabled until Dentally has returned the name and date of birth for exactly that appointment and patient',
   'AMBIGUOUS shows each candidate with its own confirm and no default',
   'Change patient shows today\'s diary for the clinician',
-  'After confirmation the session view shows the locked patient prominently',
+  'After confirmation the session view shows the locked patient prominently, looked up by the locked patient ID, with the appointment date',
+  'A computer clock more than 2 minutes out is pointed out; suggestions use the server\'s time',
   'Usable at 1280×720 with large controls; colour is never the only signal',
 ])}`,
   },
@@ -186,6 +197,7 @@ ${ac([
   'Last good diary kept in memory only and labelled stale after 2 minutes',
   'With Dentally unavailable, new sessions cannot be started and the screen says why',
   'Refresh never changes an active session',
+  'Only the newest diary response is used; a slow older response never replaces a newer one',
 ])}`,
   },
   {
@@ -195,7 +207,8 @@ ${ac([
 
 ${ac([
   'Diary views, patient views, confirmations, permission, cancellations and denied access are recorded',
-  'Details contain only allowlisted keys (no names, DOB or clinical text), enforced in code',
+  'Details contain only allowlisted keys with type-checked values (no names, DOB or clinical text), enforced in code',
+  'Diary views are audited on the server\'s terms, at most once per person, clinician and day in each 15 minutes',
   'Entity rules deny client create, update and delete; functions append only',
 ])}`,
   },
@@ -205,7 +218,7 @@ ${ac([
     body: `**Status**: workflow in \`.github/workflows/ci.yml\`. Remaining: enable branch protection requiring it.
 
 ${ac([
-  'CI runs on every push and pull request',
+  'CI runs on pushes to main and on every pull request',
   'Branch protection on main requires CI and one review',
   'Pull request template includes the safety checklist',
 ])}`,
@@ -314,8 +327,9 @@ ${ac([
   },
   {
     id: 'P2-07', milestone: 'P2', labels: ['phase:2', 'area:ui', 'safety-critical'],
-    title: 'Live transcript panel with ACTIVE indicator and gap markers',
+    title: 'Two-column scribe workspace and live transcript panel with ACTIVE indicator',
     body: `${ac([
+  'Large two-column workspace (spec section 3): live transcript on the left, Nurse Notes on the right, locked patient banner across the top; columns stack on narrow screens',
   'Timestamped segments, interim and final',
   'Unmistakable ACTIVE recording indicator visible from across the surgery',
   'Gaps over 3 seconds shown inline with their cause',
@@ -326,7 +340,7 @@ ${ac([
     id: 'P2-08', milestone: 'P2', labels: ['phase:2', 'area:ui', 'safety-critical'],
     title: 'Nurse Notes panel with autosave, revisions and provenance',
     body: `${ac([
-  'Large editable panel titled "Nurse Notes / Clinical Input"',
+  'Large editable panel titled "Nurse Notes / Clinical Input", the right-hand column of the scribe workspace',
   'Autosave on change with saved/unsaved indicator; revisions kept; conflicting saves surfaced, never overwritten',
   'Author recorded; content marked as nurse-provenance',
   'Optional prompts for LA batch and expiry, materials, shade, isolation, lab details',
@@ -334,11 +348,12 @@ ${ac([
   },
   {
     id: 'P2-09', milestone: 'P2', labels: ['phase:2', 'safety-critical'],
-    title: 'Session lifecycle with patient lock and forgotten-stop warning',
+    title: 'Session lifecycle: patient lock, forgotten-stop warning and end-of-day close',
     body: `${ac([
   'Start, pause, resume, stop through the session state machine',
   'Warning when recording runs past the appointment or into the next patient\'s slot; never switches patient',
-  'One active session per surgery enforced',
+  'One active session per surgery, per patient and per clinician enforced',
+  'Sessions still open after the clinic day are closed by a scheduled job: nothing recorded means cancelled, anything recorded means stopped and flagged for review, never discarded; each close is audited',
   'Test: dentist forgets to stop recording',
 ])}`,
   },
@@ -376,7 +391,7 @@ ${ac([
     title: 'Template system and import of Aura\'s 97-template library',
     body: `${ac([
   'Template entity with versions and approval',
-  'Aura\'s April 2026 library imported and mapped to the 22 note types',
+  'Aura\'s April 2026 library imported and mapped to the 21 note types in the spec',
   'Template suggested from appointment and conversation; clinician can change it',
   'Clinician review of each imported template recorded',
 ])}`,
@@ -497,8 +512,9 @@ ${ac([
   },
   {
     id: 'P4-04', milestone: 'P4', labels: ['phase:4', 'security'],
-    title: 'Complete audit trail and audit viewer',
+    title: 'Complete audit trail, transactional audit outbox and audit viewer',
     body: `${ac([
+  'Each audit record is written together with the change it describes (transactional outbox), replacing Phase 1\'s write-audit-first-then-compensate approach',
   'Records who started recording, patient selected, start and stop times, who edited, what changed, who approved and when, delivery status and Dentally reference',
   'Viewer for CLINIC_ADMIN and AUDITOR; clinicians see their own sessions',
 ])}`,
@@ -540,6 +556,7 @@ ${ac(['Decision recorded', 'If an offline path is approved: two identifiers, rec
     body: `${ac([
   'Edits classified as style, structure, terminology, abbreviation, formatting, transcription correction or clinical content',
   'Clinical content edits never become preferences',
+  'Rejected AI suggestions (draft statements the clinician deleted, safety findings dismissed with a reason) recorded as de-identified AgentFeedback for the approval queue; a dismissed finding can never switch a safety check off by itself',
   'Proposals phrased as conditional rules',
   'Test: the "risks, benefits and alternatives" example never inserts the phrase without a supporting source',
 ])}`,

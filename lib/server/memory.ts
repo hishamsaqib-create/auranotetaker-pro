@@ -41,6 +41,13 @@ export class InMemorySessionRepository implements SessionRepository {
       .map((s) => structuredClone(s));
   }
 
+  async findByAppointments(clinicId: string, appointmentIds: readonly string[]): Promise<ScribeSession[]> {
+    const wanted = new Set(appointmentIds);
+    return [...this.#rows.values()]
+      .filter((s) => s.clinicId === clinicId && wanted.has(s.patient.appointment.appointmentId))
+      .map((s) => structuredClone(s));
+  }
+
   /** Test and demo helper. */
   all(): ScribeSession[] {
     return [...this.#rows.values()].map((s) => structuredClone(s));
@@ -52,6 +59,12 @@ export class InMemoryAuditSink implements AuditSink {
 
   async append(event: AuditEvent): Promise<void> {
     this.events.push(Object.freeze(structuredClone(event)));
+  }
+
+  async hasRecent(clinicId: string, actorEmail: string, dedupeKey: string, sinceMs: number): Promise<boolean> {
+    return this.events.some(
+      (e) => e.clinicId === clinicId && e.actorEmail === actorEmail && e.dedupeKey === dedupeKey && e.occurredAtMs >= sinceMs,
+    );
   }
 }
 

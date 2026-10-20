@@ -15,7 +15,9 @@ npm ci
 npm run dev
 ```
 
-Open http://localhost:5173. Demo mode is the default: sign in as a fictional dentist or nurse, pick a clinician and surgery, and use the scenario menu in the striped demo banner to see a normal day, a double booking, an overrun, a gap between appointments, a patient taken in early, and Dentally being unavailable. The banner's audit trail shows what is recorded.
+Open http://localhost:5173. The development server runs in demo mode: sign in as a fictional dentist or nurse, pick a clinician and surgery, and use the scenario menu in the striped demo banner to see a normal day, a double booking, an overrun, a previous appointment never marked complete, a gap between appointments, a patient taken in early, and Dentally being unavailable. The banner's audit trail shows what is recorded.
+
+A production build must set `VITE_APP_MODE` (`base44` for the real app); without it the app shows a configuration error rather than the demo diary. See [deployment](docs/deployment.md).
 
 ## Safety rules that shape the code
 
@@ -48,7 +50,8 @@ Full detail: [clinical-safety.md](docs/clinical-safety.md).
 | `npm run dev` | Web app in demo mode |
 | `npm test` | All unit, handler and UI tests |
 | `npm run typecheck` | Type-checks the app and the Base44 adapter |
-| `npm run build` | Production build with a strict Content Security Policy |
+| `npm run build` | Production build with a strict Content Security Policy (set `VITE_APP_MODE` for a deployable build) |
+| `npm run build:demo-page` | The demo as one self-contained HTML page, for sharing |
 | `npm run sync:shared` | Copies `lib/` into `base44/shared/lib/` (run after editing `lib/`) |
 | `npm run check:shared` | Fails if the Base44 copy is stale (CI) |
 | `node scripts/github/create-backlog.mjs --repo <owner>/<repo>` | Creates the milestones and issues for all seven phases |

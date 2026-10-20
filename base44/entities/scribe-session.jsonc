@@ -13,6 +13,7 @@
       "enum": ["PATIENT_CONFIRMED", "CONSENT_DECLINED", "READY", "RECORDING", "PAUSED", "STOPPED", "GENERATING", "IN_REVIEW", "APPROVED", "DISCARDED", "CANCELLED"]
     },
     "dentally_patient_id": { "type": "string" },
+    "dentally_appointment_id": { "type": "string", "description": "Copy of appointment.dentally_appointment_id, for querying" },
     "appointment": {
       "type": "object",
       "properties": {
@@ -75,6 +76,6 @@
     "client_device_id": { "type": "string", "maxLength": 64 },
     "version": { "type": "integer", "minimum": 1 }
   },
-  "required": ["session_id", "clinic_id", "clinician_id", "status", "dentally_patient_id", "appointment", "confirmation", "consent", "version"],
+  "required": ["session_id", "clinic_id", "clinician_id", "status", "dentally_patient_id", "dentally_appointment_id", "appointment", "confirmation", "consent", "version"],
   "rls": { "create": false, "read": false, "update": false, "delete": false }
 }

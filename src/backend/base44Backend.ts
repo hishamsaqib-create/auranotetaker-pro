@@ -64,8 +64,9 @@ export function createBase44Backend(cfg: { appId: string; serverUrl?: string }):
     getDiary: (practitionerId, reason) => call('getDiary', { practitionerId, reason }),
     getPatientSummary: (appointmentId) => call('getPatientSummary', { appointmentId }),
     confirmPatient: (input) => call('confirmPatient', { ...input }),
-    recordConsent: (sessionId, given, expectedVersion) => call('recordConsent', { sessionId, given, expectedVersion }),
+    recordConsent: (sessionId, given, expectedVersion, surgeryId) => call('recordConsent', { sessionId, given, expectedVersion, surgeryId }),
     cancelSession: (sessionId, expectedVersion) => call('cancelSession', { sessionId, expectedVersion }),
     getActiveSession: (surgeryId, practitionerId) => call('getActiveSession', { surgeryId, practitionerId }),
+    getSessionPatient: (sessionId) => call('getSessionPatient', { sessionId }),
   };
 }

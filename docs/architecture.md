@@ -66,8 +66,10 @@ Design principles:
 
 React, TypeScript and Vite, desktop-first, large controls. Two modes:
 
-- **Demo mode** (default for local development): a fictional diary and an in-memory backend that runs the real server handlers. A permanent banner makes it impossible to mistake for live data.
+- **Demo mode** (default on the local development server): a fictional diary and an in-memory backend that runs the real server handlers. A permanent banner makes it impossible to mistake for live data.
 - **Connected mode**: Base44 authentication and backend functions.
+
+A production build must name its mode (`VITE_APP_MODE`); a build that does not shows a configuration error rather than falling back to demo data.
 
 Screens: sign in; clinician and surgery setup (remembered on the device, no patient data); main clinical screen (likely patient, confirm, change); scribe workspace (Phase 2); review (Phase 3); audit (Phase 6); administration.
 
@@ -132,27 +134,41 @@ sequenceDiagram
   W->>F: getDiary(clinician, today)
   F->>D: GET /v1/appointments?on=today
   D-->>F: appointments
-  F-->>W: minimal diary (IDs, times, names, state)
-  W->>W: predictLikelyPatient(now, clinician, surgery)
-  W-->>U: "Likely current patient" with reasons, or "check who is in the chair"
+  F->>F: audit DIARY_VIEWED (at most once per person, clinician and day per 15 minutes)
+  F-->>W: minimal diary, today's scribe outcomes, clinic prediction settings, server time
+  W->>W: predictLikelyPatient(server time, clinician, surgery, settings)
+  W->>F: getPatientSummary(appointment) for each card shown
+  F->>D: GET appointment, GET patient
+  F-->>W: name, date of birth, patient ID
+  W-->>U: "Likely current patient" with reasons and warnings, or "check who is in the chair"
+  Note over W: Confirm stays disabled until the summary's patient ID matches the card
   U->>W: Confirm <patient name>
-  W->>F: confirmPatient(appointment, patient, predicted appointment)
-  F->>D: GET /v1/appointments/{id} (re-verify)
-  F->>F: check patient match, today, not cancelled, no other open session in this surgery, for this patient or for this clinician
-  F-->>W: session created, patient locked
-  F->>F: audit PATIENT_CONFIRMED (predicted vs chosen)
+  W->>F: confirmPatient(appointment, patient, predicted appointment, method)
+  F->>D: GET appointment and patient again (re-verify)
+  F->>F: check patient match, clinician, today, not cancelled or DNA, earlier decline acknowledged, no other open session in this surgery, for this patient or for this clinician
+  F->>F: audit PATIENT_CONFIRMED (chosen, client's prediction, server's own prediction)
+  F->>F: create session with the patient locked, then re-check for a simultaneous confirmation
+  F-->>W: session and the identity Dentally verified
 ```
 
-Engine rules (implemented in `lib/core/prediction.ts`, tested in `lib/core/prediction.test.ts`):
+Engine rules (implemented in `lib/core/prediction.ts`, tested in `lib/core/prediction.test.ts`). The minutes are the starting settings; clinics can tune the first two (issue P1-07).
 
-- Candidates are the selected clinician's appointments that have a patient and are not cancelled, did-not-attend or completed.
-- **Tier 1**: Dentally shows the patient *In surgery*, or the current time is inside the scheduled slot.
+- Candidates are the selected clinician's appointments that have a patient, are not cancelled, did-not-attend or completed, and have not already been finished with in AuraNoteTaker today (approved, or the patient declined). Two different bookings under one appointment ID are both dropped with a warning.
+- **Tier 1**: Dentally shows the patient *In surgery* (believed from 60 minutes before the start until 30 minutes after the finish), or the current time is inside the scheduled slot.
 - **Tier 2**: starts within 10 minutes, or the scheduled finish passed within the last 30 minutes and the appointment is not completed (overrun).
-- One tier-1 candidate gives **LIKELY, HIGH** confidence (MEDIUM if the appointment is booked in a different surgery or Dentally returned an unrecognised state). One tier-2 candidate gives **LIKELY, MEDIUM**.
-- Two or more candidates in the top tier give **AMBIGUOUS**: nothing is preselected and the user must pick the patient in the chair. Double bookings and overruns land here.
-- No candidates gives **NONE**, with the next appointment offered.
+- **Tier 3**: still *In surgery* 30 to 120 minutes after the finish, which usually means the status was never updated. Never suggested on its own. After 120 minutes the status is ignored.
+- One top candidate gives **LIKELY**: HIGH for tier 1, MEDIUM for tier 2, one step lower if it is booked in a different surgery or Dentally returned an unrecognised state.
+- If any other appointment may still be running (overrunning, *In surgery* or stale *In surgery*), confidence is capped at MEDIUM and the screen names that appointment, for example "The 10:00–10:30 appointment is not marked completed in Dentally and may still be running. Check who is in the chair."
+- A single current candidate that ends up LOW is shown as **AMBIGUOUS** with a "check" warning. It is never turned into "nothing now" with the next patient offered instead.
+- Two or more candidates in the top tier give **AMBIGUOUS**: nothing is preselected and the user must pick the patient in the chair. Double bookings and a previous patient still *In surgery* land here.
+- No current candidates gives **NONE**, with the next appointment offered for an explicit choice.
+- Warnings are shown in every state, not only when the result is ambiguous.
 
-The suggestion is never acted on by itself. If the suggestion changes while it is on screen (for example at the turn of an appointment slot), the confirm buttons are disabled for 1.5 seconds so a tap meant for one patient cannot land on another.
+The web app predicts with the server's clock (estimated from the diary response) and the clinic's settings, so it suggests what the server would. A computer clock more than 2 minutes out is pointed out on screen.
+
+The suggestion is never acted on by itself. Each confirm card shows the name and date of birth Dentally returns for exactly that appointment and patient, and its button stays disabled until they have arrived and match. If the suggestion changes while it is on screen (for example at the turn of an appointment slot, or a quick change away and back), the confirm buttons are disabled for 1.5 seconds so a tap meant for one patient cannot land on another.
+
+**Open sessions.** A refreshed page restores the open session for its surgery or clinician, naming the patient by the locked patient ID (never by appointment, which Dentally can re-book). Only the person who confirmed the patient or the treating clinician, in the session's surgery and on the same day, can record the patient's answer. A session from another surgery, an earlier day or another user is shown with only a Cancel button. A session from an earlier day with nothing recorded is closed automatically the next time it is found; a scheduled end-of-day close follows in Phase 2 (P2-09). A patient who declined cannot be confirmed again for that appointment without an explicit, audited "the patient has changed their mind".
 
 ### 5.3 Scribe session (Phase 2)
 
@@ -210,13 +226,14 @@ Design response:
 ## 7. Patient identity safeguards
 
 1. The prediction engine only suggests. Nothing is attached to a patient without an explicit confirm by a signed-in user.
-2. Ambiguity is surfaced as a choice with no default.
-3. The confirm button names the patient ("Confirm Oliver Bennett") and is briefly disabled when the suggestion changes.
-4. The server re-verifies the appointment and patient with Dentally and refuses a second open session in the same surgery, for the same patient, or for the same clinician (who may have moved surgery).
-5. The session's patient is locked at creation. Diary refreshes, clock changes and new predictions never touch an existing session.
-6. Reassignment is a separate, reasoned, audited action, refused while recording and after approval.
-7. A recording that runs past its appointment into the next patient's slot raises a prominent warning. It never switches patient automatically.
-8. Every confirmation records what was predicted and what was chosen, so near misses are measurable.
+2. Ambiguity is surfaced as a choice with no default, and any appointment that may still be running is named.
+3. The confirm button names the patient ("Confirm Oliver Bennett"), stays disabled until Dentally has returned that appointment's patient and it matches the card, and is briefly disabled whenever the suggestion changes.
+4. The server re-verifies the appointment and patient with Dentally, returns the identity it verified, and refuses a second open session in the same surgery, for the same patient, or for the same clinician (who may have moved surgery). If two screens confirm at once, the earlier confirmation wins and the other is cancelled.
+5. The session's patient is locked at creation. Diary refreshes, clock changes and new predictions never touch an existing session, and the session banner looks the patient up by the locked ID.
+6. A session that cannot safely be continued here (another surgery, an earlier day, another user) offers only Cancel.
+7. Reassignment is a separate, reasoned, audited action, refused while recording and after approval.
+8. A recording that runs past its appointment into the next patient's slot raises a prominent warning. It never switches patient automatically.
+9. Every confirmation records what was chosen, what the screen predicted and what the server predicted, so near misses are measurable.
 
 ## 8. Hosting and data residency: DECISION NEEDED (D2)
 
@@ -255,7 +272,11 @@ Criteria: word error rate on dental vocabulary, Palmer and FDI notation and drug
 
 ## 10. Multi-clinic design
 
-Aura is the first tenant, but every entity carries `clinic_id` and every function resolves the caller's clinic from their staff profile, never from the request. Integrations and secrets are per clinic (secret names include the clinic key). Agent Knowledge is scoped GLOBAL, CLINIC or CLINICIAN, and only de-identified, approved items can be GLOBAL. Tests in Phase 7 attempt cross-tenant access through every function.
+Aura is the first tenant, but every entity carries `clinic_id` and no function takes the clinic from the request.
+
+**Phase 1 is single-tenant.** Each Base44 app serves one clinic, named by the `CLINIC_KEY` secret. A caller is accepted only if they have an active `StaffProfile` in that clinic, and their roles come from that profile. The clinic check inside the handlers therefore cannot fail in this set-up; it is there for when one deployment serves several clinics.
+
+**Multi-clinic (Phase 7, P7-05).** The caller's clinic will come from their staff profile, integrations and secrets will be per clinic (secret names include the clinic key), and tests will attempt cross-tenant access through every function. Agent Knowledge is already scoped GLOBAL, CLINIC or CLINICIAN, and only de-identified, approved items can be GLOBAL.
 
 ## 11. Repository layout
 
@@ -291,3 +312,6 @@ auranotetaker-pro/
 | A8 | Demo mode is the local default and permanently bannered | Developers never need production data | Never |
 | A9 | Audio not stored server-side by default | Data minimisation; transcript plus nurse notes are the inputs | Failure-recovery testing shows a short buffer is needed (then 24 hours maximum) |
 | A10 | Tooth notation stored canonically, displayed in the clinic's notation | Aura uses Palmer; speech arrives in mixed forms; validation needs one canonical form | D5 |
+| A11 | Diary and session state by polling in Phase 1 (every minute while visible, every five while hidden, at once on return); no realtime push yet | Dentally offers no change feed; polling survives browser throttling; one screen per surgery in Phase 1. Base44 realtime subscriptions are the candidate for session state shared across screens (spec section 16) in Phase 2 | Two screens need to work on one session live (nurse and dentist), or Dentally adds webhooks |
+| A12 | The confirmation audit record is written before the session is created, with a compensating record if creation fails; later changes are audited straight after, with retries, and the user is told if that fails | Base44 has no multi-entity transactions; a session must never exist without its confirmation record | Phase 4 transactional outbox (P4-04) |
+| A13 | Predictions use the server's clock and the clinic's settings | A surgery PC's clock can be wrong; the screen and the server must suggest the same patient | Never |

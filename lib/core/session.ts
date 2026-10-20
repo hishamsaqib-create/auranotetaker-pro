@@ -149,6 +149,8 @@ export type SessionEvent =
   | ({ type: 'APPROVE' } & Actor)
   | ({ type: 'DISCARD'; reason: string } & Actor)
   | ({ type: 'CANCEL' } & Actor)
+  /** System-only: closes a session left open from an earlier day with nothing recorded. */
+  | ({ type: 'EXPIRE' } & Actor)
   | ({
       type: 'REASSIGN_PATIENT';
       to: SessionPatient;
@@ -201,6 +203,8 @@ const SIMPLE: Record<string, SessionStatus> = {
   'IN_REVIEW:APPROVE': 'APPROVED',
   'PATIENT_CONFIRMED:CANCEL': 'CANCELLED',
   'READY:CANCEL': 'CANCELLED',
+  'PATIENT_CONFIRMED:EXPIRE': 'CANCELLED',
+  'READY:EXPIRE': 'CANCELLED',
 };
 
 function advance(s: ScribeSession, to: SessionStatus, e: Actor, patch: Partial<ScribeSession> = {}): ScribeSession {
@@ -283,7 +287,10 @@ export function transition(s: ScribeSession, e: SessionEvent): TransitionResult 
         patch.consent = { status: 'PENDING', recordedBy: null, recordedAtMs: null };
         return { ok: true, session: advance(s, 'PATIENT_CONFIRMED', e, patch) };
       }
-      return { ok: true, session: advance(s, s.status, e, patch) };
+      // A draft may contain the previous patient's Dentally context, so it is superseded:
+      // the session goes back to STOPPED and must be regenerated for the corrected patient.
+      const to: SessionStatus = s.status === 'IN_REVIEW' ? 'STOPPED' : s.status;
+      return { ok: true, session: advance(s, to, e, patch) };
     }
 
     case 'STOP': {

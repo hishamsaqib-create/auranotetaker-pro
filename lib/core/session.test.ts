@@ -57,6 +57,7 @@ const ALL_EVENTS: EventInput[] = [
   { type: 'APPROVE' },
   { type: 'DISCARD', reason: 'wrong template' },
   { type: 'CANCEL' },
+  { type: 'EXPIRE' },
 ];
 
 describe('scribe session', () => {
@@ -176,6 +177,17 @@ describe('scribe session', () => {
       expect(r.ok && r.session.reassignments[0]?.consentCarriedOver).toBe(true);
     });
 
+    it('during review: supersedes the draft so it must be regenerated for the corrected patient', () => {
+      const review = apply(
+        newSession(),
+        { type: 'RECORD_CONSENT', given: true }, { type: 'START_RECORDING' }, { type: 'STOP' },
+        { type: 'BEGIN_GENERATION' }, { type: 'GENERATION_SUCCEEDED' },
+      );
+      const r = transition(review, { type: 'REASSIGN_PATIENT', to: patientB, reason: 'Wrong patient', consentConfirmedForNewPatient: true, by, atMs: T0 });
+      expect(r.ok && r.session.status).toBe('STOPPED');
+      expect(r.ok && r.session.patient.dentallyPatientId).toBe('p-B');
+    });
+
     it('is refused after approval', () => {
       const approved = apply(
         newSession(),
@@ -198,6 +210,14 @@ describe('scribe session', () => {
     const stopped = apply(recording, { type: 'STOP' });
     expect(transition(stopped, { type: 'DISCARD', reason: '', by, atMs: T0 })).toMatchObject({ ok: false, code: 'REASON_REQUIRED' });
     expect(transition(stopped, { type: 'DISCARD', reason: 'test run', by, atMs: T0 })).toMatchObject({ ok: true });
+  });
+});
+
+describe('expiry', () => {
+  it('closes a session with nothing recorded, but never one that has recordings', () => {
+    expect(apply(newSession(), { type: 'EXPIRE' }).status).toBe('CANCELLED');
+    const recording = apply(newSession(), { type: 'RECORD_CONSENT', given: true }, { type: 'START_RECORDING' });
+    expect(transition(recording, { type: 'EXPIRE', by: 'system', atMs: T0 })).toMatchObject({ ok: false, code: 'INVALID_TRANSITION' });
   });
 });
 

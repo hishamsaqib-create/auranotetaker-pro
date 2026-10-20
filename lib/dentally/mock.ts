@@ -10,12 +10,13 @@ import { DentallyError } from './client.ts';
 import { DENTALLY_CAPABILITIES, UNSUPPORTED_DETAIL, unsupported } from './service.ts';
 import type { DentallyReadService, DiaryResult, PatientSummary, PractitionerSummary, RoomSummary } from './types.ts';
 
-export type DemoScenario = 'normal' | 'double-booked' | 'overrun' | 'between' | 'taken-early' | 'dentally-offline';
+export type DemoScenario = 'normal' | 'double-booked' | 'overrun' | 'previous-open' | 'between' | 'taken-early' | 'dentally-offline';
 
 export const DEMO_SCENARIOS: ReadonlyArray<{ id: DemoScenario; label: string }> = [
   { id: 'normal', label: 'Normal: patient in surgery now' },
   { id: 'double-booked', label: 'Double booking' },
   { id: 'overrun', label: 'Previous appointment overrunning' },
+  { id: 'previous-open', label: 'Previous appointment not marked complete' },
   { id: 'between', label: 'Between appointments' },
   { id: 'taken-early', label: 'Next patient taken in early' },
   { id: 'dentally-offline', label: 'Dentally unavailable' },
@@ -93,6 +94,11 @@ function applyScenario(slots: Slot[], scenario: DemoScenario): Slot[] {
       Object.assign(byId('DEMO-A03'), { start: -55, minutes: 45, state: 'In surgery', reason: 'Composite Bonding' });
       Object.assign(byId('DEMO-A04'), { start: -10, state: 'Arrived' });
       break;
+    case 'previous-open':
+      // Reception never completed the 09:45 appointment, and the next patient is already in surgery.
+      Object.assign(byId('DEMO-A03'), { start: -55, minutes: 45, state: 'Arrived', reason: 'Composite Bonding' });
+      Object.assign(byId('DEMO-A04'), { start: -10 });
+      break;
     case 'between':
       Object.assign(byId('DEMO-A04'), { start: 18, minutes: 12, state: 'Confirmed', reason: 'Review' });
       break;
@@ -117,11 +123,17 @@ export class MockDentallyService implements DentallyReadService {
   readonly #clock: () => number;
   readonly #anchor: number;
   #scenario: DemoScenario;
+  readonly #rebooked = new Map<string, string>();
 
   constructor(opts: MockDentallyOptions) {
     this.#clock = opts.clock;
     this.#scenario = opts.scenario ?? 'normal';
     this.#anchor = opts.anchorMs ?? Math.floor(opts.clock() / (5 * MINUTE_MS)) * 5 * MINUTE_MS;
+  }
+
+  /** Simulates Dentally re-booking an appointment to a different patient (tests and demo). */
+  rebook(appointmentId: string, patientId: string): void {
+    this.#rebooked.set(appointmentId, patientId);
   }
 
   get scenario(): DemoScenario {
@@ -141,7 +153,8 @@ export class MockDentallyService implements DentallyReadService {
   }
 
   #diary(): DiaryAppointment[] {
-    return applyScenario(baseSchedule(), this.#scenario).map((s) => {
+    return applyScenario(baseSchedule(), this.#scenario).map((slot) => {
+      const s = this.#rebooked.has(slot.id) ? { ...slot, patientId: this.#rebooked.get(slot.id)! } : slot;
       const startMs = this.#anchor + s.start * MINUTE_MS;
       const finishMs = startMs + s.minutes * MINUTE_MS;
       return {

@@ -1,46 +1,62 @@
 import type { ReactNode } from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { DiaryAppointment } from '../../lib/core/appointments.ts';
-import type { Candidate } from '../../lib/core/prediction.ts';
+import type { PredictionWarning } from '../../lib/core/prediction.ts';
 import { explainCandidate, explainWarning, predictLikelyPatient } from '../../lib/core/prediction.ts';
 import type { ConfirmationMethod, ScribeSession } from '../../lib/core/session.ts';
 import { formatClock, MINUTE_MS } from '../../lib/core/time.ts';
+import type { PatientSummary } from '../../lib/dentally/types.ts';
+import type { ScribeOutcome } from '../../lib/server/handlers.ts';
 import type { ClinicianEntry, SurgeryEntry } from '../../lib/server/ports.ts';
 import type { AppBackend } from '../backend/types.ts';
 import { BackendError } from '../backend/types.ts';
 import { useChangeGuard } from '../hooks/useChangeGuard.ts';
 import type { DiaryState } from '../hooks/useDiary.ts';
-import type { SummaryState } from '../hooks/usePatientSummaries.ts';
-import { usePatientSummaries } from '../hooks/usePatientSummaries.ts';
+import type { SummaryRequest } from '../hooks/usePatientSummaries.ts';
+import { summaryKey, usePatientSummaries } from '../hooks/usePatientSummaries.ts';
 import { DiaryList } from './DiaryList.tsx';
 import { Notice } from './Notice.tsx';
-import { displayNameFor, PatientCard } from './PatientCard.tsx';
-
-export interface ConfirmedPatientDisplay {
-  displayName: string;
-  dateOfBirth: string | null;
-}
+import { PatientCard } from './PatientCard.tsx';
 
 export interface PatientConfirmationProps {
   backend: AppBackend;
   diary: DiaryState & { refresh: () => void };
+  /** The time now, corrected to the server's clock (see useDiary clockOffsetMs). */
   now: number;
   timeZone: string;
   clinician: ClinicianEntry;
   surgery: SurgeryEntry | null;
   roomNames: Readonly<Record<string, string>>;
-  finishedIds: ReadonlySet<string>;
-  onConfirmed: (session: ScribeSession, display: ConfirmedPatientDisplay) => void;
+  /** Appointments already finished with in AuraNoteTaker today. They are never suggested again. */
+  outcomes: Readonly<Record<string, ScribeOutcome>>;
+  /** Called with the identity the server verified and locked to the new session. */
+  onConfirmed: (session: ScribeSession, patient: PatientSummary) => void;
   onOpenExistingSession: () => void;
 }
+
+interface Attempt {
+  appointment: DiaryAppointment;
+  method: ConfirmationMethod;
+  predicted: string | null;
+}
+
+/** Errors after which the diary on screen is probably out of date. */
+const REFRESH_AFTER = new Set(['PATIENT_MISMATCH', 'NOT_FOUND', 'APPOINTMENT_CLOSED', 'PRACTITIONER_MISMATCH']);
 
 function minutesUntil(ms: number, now: number): number {
   return Math.max(0, Math.ceil((ms - now) / MINUTE_MS));
 }
 
+/**
+ * Suggests who is in the chair and asks a person to confirm it.
+ *
+ * SAFETY (hazard H01): the prediction only chooses which card to show. Nothing happens until someone
+ * presses a confirm button that names the patient, and the server then checks the appointment and the
+ * patient with Dentally again before it creates a session.
+ */
 export function PatientConfirmation(p: PatientConfirmationProps) {
   const nowMinute = Math.floor(p.now / MINUTE_MS) * MINUTE_MS;
-  const finishedKey = [...p.finishedIds].sort().join('|');
+  const outcomeKey = Object.keys(p.outcomes).sort().join('|');
 
   const prediction = useMemo(
     () =>
@@ -49,14 +65,16 @@ export function PatientConfirmation(p: PatientConfirmationProps) {
         practitionerId: p.clinician.practitionerId,
         roomId: p.surgery?.roomId ?? null,
         appointments: p.diary.appointments,
-        excludeAppointmentIds: finishedKey ? finishedKey.split('|') : [],
+        excludeAppointmentIds: outcomeKey ? outcomeKey.split('|') : [],
+        options: p.diary.predictionOptions,
       }),
-    [nowMinute, p.clinician.practitionerId, p.surgery?.roomId, p.diary.appointments, finishedKey],
+    [nowMinute, p.clinician.practitionerId, p.surgery?.roomId, p.diary.appointments, outcomeKey, p.diary.predictionOptions],
   );
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<BackendError | null>(null);
+  const [lastAttempt, setLastAttempt] = useState<Attempt | null>(null);
   const diaryRef = useRef<HTMLOListElement>(null);
 
   const selected = selectedId ? (p.diary.appointments.find((a) => a.appointmentId === selectedId) ?? null) : null;
@@ -64,26 +82,34 @@ export function PatientConfirmation(p: PatientConfirmationProps) {
     if (selectedId && !selected) setSelectedId(null); // the appointment left the diary on refresh
   }, [selectedId, selected]);
 
-  const topTier: Candidate[] = useMemo(() => {
-    const first = prediction.candidates[0];
-    return prediction.status === 'AMBIGUOUS' && first ? prediction.candidates.filter((c) => c.tier === first.tier) : [];
-  }, [prediction]);
-
   const shown: DiaryAppointment[] = selected
     ? [selected]
     : prediction.status === 'LIKELY' && prediction.likely
       ? [prediction.likely.appointment]
       : prediction.status === 'AMBIGUOUS'
-        ? topTier.map((c) => c.appointment)
+        ? prediction.choices.map((c) => c.appointment)
         : prediction.nextAppointment
           ? [prediction.nextAppointment]
           : [];
 
-  const summaries = usePatientSummaries(
-    p.backend,
-    shown.map((a) => a.appointmentId),
-    p.diary.lastOkAt,
-  );
+  // Name and date of birth for exactly the appointment and patient each card shows.
+  const requests: SummaryRequest[] = shown.flatMap((a) => (a.patientId ? [{ appointmentId: a.appointmentId, patientId: a.patientId }] : []));
+  const summaries = usePatientSummaries(p.backend, requests, p.diary.lastOkAt);
+  const summaryFor = (a: DiaryAppointment) => (a.patientId ? summaries.get(summaryKey({ appointmentId: a.appointmentId, patientId: a.patientId })) : undefined);
+
+  // Dentally says an appointment now belongs to someone else: fetch the diary again, once per change.
+  const refreshedFor = useRef(new Set<string>());
+  const requestKey = requests.map(summaryKey).join('|');
+  const { refresh } = p.diary;
+  useEffect(() => {
+    const mismatched = (requestKey ? requestKey.split('|') : []).filter(
+      (k) => summaries.get(k)?.status === 'mismatch' && !refreshedFor.current.has(k),
+    );
+    if (mismatched.length === 0) return;
+    for (const k of mismatched) refreshedFor.current.add(k);
+    refresh();
+  }, [summaries, requestKey, refresh]);
+
   const guardKey = `${selected ? 'SELECTED' : prediction.status}:${shown.map((a) => `${a.appointmentId}/${a.patientId}`).join(',')}`;
   const ready = useChangeGuard(guardKey);
 
@@ -93,51 +119,61 @@ export function PatientConfirmation(p: PatientConfirmationProps) {
     roomNames: p.roomNames,
     selectedRoomId: p.surgery?.roomId ?? null,
   };
+  const warningText = (w: PredictionWarning) => explainWarning(w, { timeZone: p.timeZone, appointments: p.diary.appointments });
   const currentIds = new Set(prediction.candidates.filter((c) => c.tier < 3).map((c) => c.appointment.appointmentId));
 
-  async function confirm(a: DiaryAppointment, method: ConfirmationMethod, predictedAppointmentId: string | null) {
+  async function confirm(attempt: Attempt, acknowledgePreviousDecline = false) {
+    const a = attempt.appointment;
     if (!a.patientId) return;
     setBusy(true);
     setError(null);
+    setLastAttempt(attempt);
     try {
-      const { session } = await p.backend.confirmPatient({
+      const { session, patient } = await p.backend.confirmPatient({
         appointmentId: a.appointmentId,
         patientId: a.patientId,
         practitionerId: p.clinician.practitionerId,
         surgeryId: p.surgery?.surgeryId ?? null,
-        predictedAppointmentId,
-        method,
+        predictedAppointmentId: attempt.predicted,
+        method: attempt.method,
+        ...(acknowledgePreviousDecline ? { acknowledgePreviousDecline: true } : {}),
       });
-      const summary = summaries.get(a.appointmentId);
-      p.onConfirmed(session, {
-        displayName: displayNameFor(a, summary),
-        dateOfBirth: summary?.status === 'ok' ? summary.data.dateOfBirth : null,
-      });
+      p.onConfirmed(session, patient);
     } catch (err) {
-      setError(err instanceof BackendError ? err : new BackendError('UNKNOWN', 'The patient could not be confirmed.'));
-      if (err instanceof BackendError && err.code === 'PATIENT_MISMATCH') p.diary.refresh();
+      const e = err instanceof BackendError ? err : new BackendError('UNKNOWN', 'The patient could not be confirmed.');
+      setError(e);
+      if (REFRESH_AFTER.has(e.code)) p.diary.refresh();
     } finally {
       setBusy(false);
     }
   }
 
-  function methodForSelected(a: DiaryAppointment): { method: ConfirmationMethod; predicted: string | null } {
+  function attemptFor(a: DiaryAppointment): Attempt {
     if (prediction.status === 'LIKELY' && prediction.likely) {
       const likelyId = prediction.likely.appointment.appointmentId;
-      return { method: a.appointmentId === likelyId ? 'CONFIRMED_SUGGESTION' : 'CHOSE_ALTERNATIVE', predicted: likelyId };
+      return { appointment: a, method: a.appointmentId === likelyId ? 'CONFIRMED_SUGGESTION' : 'CHOSE_ALTERNATIVE', predicted: likelyId };
     }
-    if (prediction.status === 'AMBIGUOUS' && topTier.some((c) => c.appointment.appointmentId === a.appointmentId)) {
-      return { method: 'RESOLVED_AMBIGUITY', predicted: null };
+    if (prediction.status === 'AMBIGUOUS' && prediction.choices.some((c) => c.appointment.appointmentId === a.appointmentId)) {
+      return { appointment: a, method: 'RESOLVED_AMBIGUITY', predicted: null };
     }
-    return { method: 'CHOSE_FROM_DIARY', predicted: null };
+    return { appointment: a, method: 'CHOSE_FROM_DIARY', predicted: null };
   }
 
+  // The earlier-decline question applies only while that same patient is still on screen.
+  const declineRetry =
+    error?.code === 'PREVIOUS_DECLINE' && lastAttempt && shown.some((a) => a.appointmentId === lastAttempt.appointment.appointmentId && a.patientId === lastAttempt.appointment.patientId)
+      ? lastAttempt
+      : null;
+
   const focusDiary = () => diaryRef.current?.focus();
-  const card = (a: DiaryAppointment, extra: { reasons?: readonly string[]; method: ConfirmationMethod; predicted: string | null; size?: 'large' | 'compact'; children?: ReactNode }) => (
+  const card = (
+    a: DiaryAppointment,
+    extra: { attempt: Attempt; reasons?: readonly string[]; size?: 'large' | 'compact'; children?: ReactNode },
+  ) => (
     <PatientCard
       key={a.appointmentId}
       appointment={a}
-      summary={summaries.get(a.appointmentId) as SummaryState | undefined}
+      summary={summaryFor(a)}
       timeZone={p.timeZone}
       clinicianName={p.clinician.displayName}
       roomNames={p.roomNames}
@@ -145,11 +181,23 @@ export function PatientConfirmation(p: PatientConfirmationProps) {
       ready={ready}
       busy={busy}
       size={extra.size}
-      onConfirm={() => void confirm(a, extra.method, extra.predicted)}
+      onConfirm={() => void confirm(extra.attempt)}
+      onRetry={p.diary.refresh}
     >
       {extra.children}
     </PatientCard>
   );
+
+  const warningNotice = (warnings: readonly PredictionWarning[], title: string) =>
+    warnings.length > 0 ? (
+      <Notice tone="warn" title={title}>
+        <ul className="warning-list">
+          {warnings.map((w) => (
+            <li key={w.code}>{warningText(w)}</li>
+          ))}
+        </ul>
+      </Notice>
+    ) : null;
 
   const offline = p.diary.error !== null && p.diary.appointments.length === 0;
 
@@ -158,12 +206,16 @@ export function PatientConfirmation(p: PatientConfirmationProps) {
       <section className="confirm-panel" aria-live="polite">
         {error && (
           <Notice
-            tone="bad"
+            tone={error.code === 'PREVIOUS_DECLINE' ? 'warn' : 'bad'}
             title={error.message}
             action={
               error.code === 'ACTIVE_SESSION_EXISTS' ? (
                 <button type="button" className="button button-secondary" onClick={p.onOpenExistingSession}>
                   Open that session
+                </button>
+              ) : declineRetry ? (
+                <button type="button" className="button button-secondary" disabled={busy} onClick={() => void confirm(declineRetry, true)}>
+                  The patient has changed their mind
                 </button>
               ) : undefined
             }
@@ -171,8 +223,8 @@ export function PatientConfirmation(p: PatientConfirmationProps) {
         )}
         {p.diary.error && !offline && (
           <Notice tone="warn" title="Dentally stopped responding">
-            The diary below was last updated at {p.diary.lastOkAt ? formatClock(p.diary.lastOkAt, p.timeZone) : 'an earlier time'} and may be out of date.
-            Confirming a patient checks with Dentally again.
+            The diary below was last updated at {p.diary.lastOkAt ? formatClock(p.diary.lastOkAt + (p.diary.clockOffsetMs ?? 0), p.timeZone) : 'an earlier time'} and
+            may be out of date. Confirming a patient checks with Dentally again.
           </Notice>
         )}
 
@@ -202,7 +254,11 @@ export function PatientConfirmation(p: PatientConfirmationProps) {
                 Back to the suggestion
               </button>
             </div>
-            {card(selected, methodForSelected(selected))}
+            {warningNotice(
+              prediction.warnings.filter((w) => w.appointmentIds.includes(selected.appointmentId)),
+              'Check before confirming',
+            )}
+            {card(selected, { attempt: attemptFor(selected) })}
           </div>
         ) : prediction.status === 'LIKELY' && prediction.likely ? (
           <div className="state-block">
@@ -212,10 +268,10 @@ export function PatientConfirmation(p: PatientConfirmationProps) {
                 {prediction.likely.confidence === 'HIGH' ? 'High confidence' : 'Medium confidence: check the reasons'}
               </span>
             </div>
+            {warningNotice(prediction.warnings, 'Check before confirming')}
             {card(prediction.likely.appointment, {
+              attempt: attemptFor(prediction.likely.appointment),
               reasons: explainCandidate(prediction.likely, explainCtx),
-              method: 'CONFIRMED_SUGGESTION',
-              predicted: prediction.likely.appointment.appointmentId,
               children: (
                 <button type="button" className="button button-secondary" onClick={focusDiary}>
                   Choose another patient
@@ -228,16 +284,18 @@ export function PatientConfirmation(p: PatientConfirmationProps) {
             <div className="state-heading">
               <h1 className="state-title">Check who is in the chair</h1>
             </div>
-            {prediction.warnings
-              .filter((w) => w.code === 'DOUBLE_BOOKED' || w.code === 'PREVIOUS_STILL_IN_SURGERY' || w.code === 'MULTIPLE_CANDIDATES')
-              .map((w) => (
-                <p key={w.code} className="state-lead">
-                  {explainWarning(w)}
-                </p>
-              ))}
-            <div className="candidate-grid">
-              {topTier.map((c) =>
-                card(c.appointment, { reasons: explainCandidate(c, explainCtx), method: 'RESOLVED_AMBIGUITY', predicted: null, size: 'compact' }),
+            {prediction.warnings.map((w) => (
+              <p key={w.code} className="state-lead">
+                {warningText(w)}
+              </p>
+            ))}
+            <div className={prediction.choices.length > 1 ? 'candidate-grid' : undefined}>
+              {prediction.choices.map((c) =>
+                card(c.appointment, {
+                  attempt: attemptFor(c.appointment),
+                  reasons: explainCandidate(c, explainCtx),
+                  size: prediction.choices.length > 1 ? 'compact' : 'large',
+                }),
               )}
             </div>
           </div>
@@ -246,13 +304,14 @@ export function PatientConfirmation(p: PatientConfirmationProps) {
             <div className="state-heading">
               <h1 className="state-title">No appointment for {p.clinician.displayName} right now</h1>
             </div>
+            {warningNotice(prediction.warnings, 'Check the diary')}
             {prediction.nextAppointment ? (
               <>
                 <p className="state-lead">
                   Next appointment at {formatClock(prediction.nextAppointment.startMs, p.timeZone)}, in{' '}
                   {minutesUntil(prediction.nextAppointment.startMs, nowMinute)} minutes. Confirm it only if this patient is in the chair now.
                 </p>
-                {card(prediction.nextAppointment, { method: 'CHOSE_FROM_DIARY', predicted: null })}
+                {card(prediction.nextAppointment, { attempt: attemptFor(prediction.nextAppointment) })}
               </>
             ) : (
               <p className="state-lead">There are no more appointments today. Choose a patient from the diary if someone is in the chair.</p>
@@ -267,11 +326,11 @@ export function PatientConfirmation(p: PatientConfirmationProps) {
         timeZone={p.timeZone}
         roomNames={p.roomNames}
         currentIds={currentIds}
-        finishedIds={p.finishedIds}
+        outcomes={p.outcomes}
         selectedId={selectedId}
         onSelect={(a) => setSelectedId(a.appointmentId)}
         loading={p.diary.loading}
-        lastOkAt={p.diary.lastOkAt}
+        lastOkAt={p.diary.lastOkAt === null ? null : p.diary.lastOkAt + (p.diary.clockOffsetMs ?? 0)}
         rejectedCount={p.diary.rejectedCount}
         onRefresh={p.diary.refresh}
         listRef={diaryRef}

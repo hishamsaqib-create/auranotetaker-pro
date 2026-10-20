@@ -66,7 +66,7 @@ describe('predictLikelyPatient', () => {
     const r = predictLikelyPatient({ nowMs: at('10:35'), practitionerId: DR, appointments: [a, b] });
     expect(r.status).toBe('AMBIGUOUS');
     expect(r.likely).toBeNull();
-    expect(r.candidates.map((c) => c.appointment.appointmentId).sort()).toEqual([a.appointmentId, b.appointmentId].sort());
+    expect(r.choices.map((c) => c.appointment.appointmentId).sort()).toEqual([a.appointmentId, b.appointmentId].sort());
     expect(r.warnings.find((w) => w.code === 'DOUBLE_BOOKED')).toBeTruthy();
     expect(explainWarning(r.warnings.find((w) => w.code === 'DOUBLE_BOOKED')!)).toMatch(/Check who is in the chair/);
   });
@@ -82,13 +82,41 @@ describe('predictLikelyPatient', () => {
     expect(reasons).toContain('Was due to finish at 10:30 (10 minutes ago) and is not marked completed');
   });
 
-  it('ignores an "In surgery" status left on long after the appointment finished, but warns about it', () => {
+  it('treats an "In surgery" status left on 30 to 120 minutes after the finish as possibly stale: suggests the current patient, but only with MEDIUM confidence and a warning', () => {
     const forgotten = appt('09:00', '09:30', { state: 'In surgery' });
     const current = appt('10:30', '11:00');
     const r = predictLikelyPatient({ nowMs: at('10:35'), practitionerId: DR, appointments: [forgotten, current] });
     expect(r.status).toBe('LIKELY');
     expect(r.likely?.appointment.appointmentId).toBe(current.appointmentId);
-    expect(r.warnings.map((w) => w.code)).toContain('STALE_IN_SURGERY');
+    expect(r.likely?.confidence).toBe('MEDIUM');
+    expect(r.warnings.map((w) => w.code)).toEqual(expect.arrayContaining(['STALE_IN_SURGERY', 'PREVIOUS_NOT_FINISHED']));
+    const ctxW = { timeZone: 'Europe/London', appointments: [forgotten, current] };
+    expect(explainWarning(r.warnings.find((w) => w.code === 'STALE_IN_SURGERY')!, ctxW)).toBe(
+      'The 09:00–09:30 appointment is still marked In surgery long after it was due to finish.',
+    );
+  });
+
+  it('ignores an "In surgery" status left on for more than two hours (never updated)', () => {
+    const ancient = appt('08:00', '08:30', { state: 'In surgery' });
+    const current = appt('10:30', '11:00');
+    const r = predictLikelyPatient({ nowMs: at('10:35'), practitionerId: DR, appointments: [ancient, current] });
+    expect(r.status).toBe('LIKELY');
+    expect(r.likely?.confidence).toBe('HIGH');
+    expect(r.warnings).toEqual([]);
+  });
+
+  it('caps confidence and warns when the previous appointment is not marked completed (possible overrun)', () => {
+    const previous = appt('10:00', '10:30', { state: 'Arrived' });
+    const current = appt('10:30', '11:00');
+    const r = predictLikelyPatient({ nowMs: at('10:35'), practitionerId: DR, appointments: [previous, current] });
+    expect(r.status).toBe('LIKELY');
+    expect(r.likely?.appointment.appointmentId).toBe(current.appointmentId);
+    expect(r.likely?.confidence).toBe('MEDIUM');
+    const w = r.warnings.find((x) => x.code === 'PREVIOUS_NOT_FINISHED')!;
+    expect(w.appointmentIds).toEqual([previous.appointmentId]);
+    expect(explainWarning(w, { timeZone: 'Europe/London', appointments: [previous, current] })).toBe(
+      'The 10:00–10:30 appointment is not marked completed in Dentally and may still be running. Check who is in the chair.',
+    );
   });
 
   it('offers a not-yet-completed overrunning appointment with MEDIUM confidence between appointments', () => {
@@ -159,9 +187,12 @@ describe('predictLikelyPatient', () => {
     expect(explainCandidate(r1.likely!, ctx).join(' ')).toContain('"Ready for checkout"');
 
     const oddElsewhere = appt('10:30', '11:00', { state: 'Unknown', roomId: 'room-3' });
-    const r2 = predictLikelyPatient({ nowMs: at('10:40'), practitionerId: DR, roomId: 'room-2', appointments: [oddElsewhere] });
-    expect(r2.status).toBe('NONE');
-    expect(r2.candidates).toHaveLength(1);
+    const later = appt('11:00', '11:30');
+    const r2 = predictLikelyPatient({ nowMs: at('10:40'), practitionerId: DR, roomId: 'room-2', appointments: [oddElsewhere, later] });
+    // Never "no appointment now, here is the next patient" while a current appointment exists: the user must check it.
+    expect(r2.status).toBe('AMBIGUOUS');
+    expect(r2.choices.map((c) => c.appointment.appointmentId)).toEqual([oddElsewhere.appointmentId]);
+    expect(r2.warnings.map((w) => w.code)).toContain('NEEDS_CHECK');
   });
 
   it('does not suggest an appointment already finished with in AuraNoteTaker, and moves on to the next one', () => {
@@ -175,6 +206,15 @@ describe('predictLikelyPatient', () => {
     });
     expect(r.status).toBe('NONE');
     expect(r.nextAppointment?.appointmentId).toBe(next.appointmentId);
+  });
+
+  it('drops every copy of an appointment ID that Dentally returns with different bookings', () => {
+    const real = appt('10:30', '11:00');
+    const clash = { ...real, patientId: 'p-other', patientName: 'Someone Else' };
+    const r = predictLikelyPatient({ nowMs: at('10:40'), practitionerId: DR, appointments: [real, clash] });
+    expect(r.status).toBe('NONE');
+    expect(r.candidates).toHaveLength(0);
+    expect(r.warnings.map((w) => w.code)).toContain('CONFLICTING_DUPLICATE');
   });
 
   it('ignores duplicated entries and appointments with unreadable times, with warnings', () => {

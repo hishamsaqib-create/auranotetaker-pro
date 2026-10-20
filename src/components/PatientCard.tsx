@@ -3,19 +3,26 @@ import type { DiaryAppointment } from '../../lib/core/appointments.ts';
 import { formatCalendarDate, formatTimeRange } from '../../lib/core/time.ts';
 import type { SummaryState } from '../hooks/usePatientSummaries.ts';
 
-export function displayNameFor(a: DiaryAppointment, summary: SummaryState | undefined): string {
-  if (summary?.status === 'ok') return summary.data.displayName;
+/** True only when Dentally's own record for this appointment names the patient the diary shows. */
+export function isVerified(a: DiaryAppointment, summary: SummaryState | undefined): boolean {
+  return summary?.status === 'ok' && a.patientId !== null && summary.data.patientId === a.patientId;
+}
+
+function cardName(a: DiaryAppointment, summary: SummaryState | undefined): string {
+  if (isVerified(a, summary) && summary?.status === 'ok') return summary.data.displayName;
   return a.patientName ?? 'Unnamed patient';
 }
 
 function dobText(summary: SummaryState | undefined): string {
-  if (!summary || summary.status === 'loading') return 'Loading…';
+  if (!summary || summary.status === 'loading') return 'Checking with Dentally…';
   if (summary.status === 'error') return 'Could not load from Dentally';
+  if (summary.status === 'mismatch') return 'Dentally now shows a different patient';
   return formatCalendarDate(summary.data.dateOfBirth) ?? 'Not recorded in Dentally';
 }
 
 export interface PatientCardProps {
   appointment: DiaryAppointment;
+  /** Name and date of birth from Dentally for exactly this appointment and patient (see usePatientSummaries). */
   summary: SummaryState | undefined;
   timeZone: string;
   clinicianName: string;
@@ -26,10 +33,20 @@ export interface PatientCardProps {
   ready: boolean;
   busy: boolean;
   onConfirm: () => void;
+  /** Fetches the diary again; offered when the patient's details could not be checked. */
+  onRetry?: () => void;
   size?: 'large' | 'compact';
   children?: ReactNode;
 }
 
+/**
+ * One patient to confirm: name, date of birth and Dentally ID for the identity check, the booking, and
+ * a confirm button that names the patient.
+ *
+ * SAFETY (hazard H01): the button stays disabled until Dentally has returned this appointment's patient
+ * and it is the patient the diary shows, and while the change guard holds. A patient whose details
+ * cannot be checked cannot be confirmed.
+ */
 export function PatientCard({
   appointment,
   summary,
@@ -40,13 +57,23 @@ export function PatientCard({
   ready,
   busy,
   onConfirm,
+  onRetry,
   size = 'large',
   children,
 }: PatientCardProps) {
-  const name = displayNameFor(appointment, summary);
+  const name = cardName(appointment, summary);
+  const verified = isVerified(appointment, summary);
   const room = appointment.roomId ? (roomNames[appointment.roomId] ?? 'Unknown surgery') : 'No surgery in Dentally';
-  const disabled = !ready || busy;
-  const hintId = `guard-${appointment.appointmentId}`;
+  const disabled = !ready || busy || !verified;
+  const hintId = `confirm-hint-${appointment.appointmentId}`;
+
+  const check: { text: string; tone: 'muted' | 'bad' } | null = verified
+    ? null
+    : summary?.status === 'error'
+      ? { text: "The patient's details could not be loaded from Dentally, so they cannot be confirmed yet.", tone: 'bad' }
+      : summary?.status === 'mismatch'
+        ? { text: 'Dentally now shows a different patient for this appointment. Refresh the diary and check again.', tone: 'bad' }
+        : { text: "Confirm becomes available once Dentally has returned the patient's details.", tone: 'muted' };
 
   return (
     <article className={`patient patient-${size}`} aria-label={`Patient ${name}`}>
@@ -54,7 +81,7 @@ export function PatientCard({
       <dl className="patient-facts">
         <div>
           <dt>Date of birth</dt>
-          <dd>{dobText(summary)}</dd>
+          <dd className={summary?.status === 'mismatch' || summary?.status === 'error' ? 'fact-bad' : undefined}>{dobText(summary)}</dd>
         </div>
         <div>
           <dt>Dentally ID</dt>
@@ -93,20 +120,34 @@ export function PatientCard({
       <div className="actions">
         <button
           type="button"
-          className={`button button-primary confirm ${ready ? '' : 'confirm-holding'}`}
+          className={`button button-primary confirm ${ready && verified ? '' : 'confirm-holding'}`}
           disabled={disabled}
-          aria-describedby={!ready ? hintId : undefined}
+          aria-describedby={disabled && !busy ? hintId : undefined}
           onClick={onConfirm}
         >
           {busy ? 'Checking with Dentally…' : `Confirm ${name}`}
         </button>
-        {!ready && (
+        {children}
+      </div>
+      {check ? (
+        <p id={hintId} className={`confirm-check confirm-check-${check.tone}`} role={check.tone === 'bad' ? 'alert' : undefined}>
+          {check.text}
+          {onRetry && check.tone === 'bad' && (
+            <>
+              {' '}
+              <button type="button" className="link-button" onClick={onRetry}>
+                Refresh the diary
+              </button>
+            </>
+          )}
+        </p>
+      ) : (
+        !ready && (
           <span id={hintId} className="visually-hidden">
             Available in a moment. The suggestion has just changed.
           </span>
-        )}
-        {children}
-      </div>
+        )
+      )}
     </article>
   );
 }

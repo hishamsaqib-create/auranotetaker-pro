@@ -1,7 +1,10 @@
 import type { AuditEvent } from '../../lib/core/audit.ts';
-import type { ConfirmationMethod, ScribeSession } from '../../lib/core/session.ts';
+import type { ConfirmationMethod } from '../../lib/core/session.ts';
 import type { DemoScenario } from '../../lib/dentally/mock.ts';
+import type { PatientSummary } from '../../lib/dentally/types.ts';
 import type {
+  ActiveSessionResponse,
+  ConfirmPatientResponse,
   DiaryResponse,
   MeResponse,
   PatientSummaryResponse,
@@ -29,6 +32,8 @@ export interface ConfirmPatientInput {
   surgeryId: string | null;
   predictedAppointmentId: string | null;
   method: ConfirmationMethod;
+  /** Set only after the user confirms the patient has changed their mind about an earlier decline. */
+  acknowledgePreviousDecline?: boolean;
 }
 
 export type DiaryReason = 'INITIAL' | 'REFRESH' | 'MANUAL';
@@ -42,10 +47,12 @@ export interface AppBackend {
   getSetupOptions(): Promise<SetupOptionsResponse>;
   getDiary(practitionerId: string, reason: DiaryReason): Promise<DiaryResponse>;
   getPatientSummary(appointmentId: string): Promise<PatientSummaryResponse>;
-  confirmPatient(input: ConfirmPatientInput): Promise<SessionResponse>;
-  recordConsent(sessionId: string, given: boolean, expectedVersion: number): Promise<SessionResponse>;
+  confirmPatient(input: ConfirmPatientInput): Promise<ConfirmPatientResponse>;
+  recordConsent(sessionId: string, given: boolean, expectedVersion: number, surgeryId: string | null): Promise<SessionResponse>;
   cancelSession(sessionId: string, expectedVersion: number): Promise<SessionResponse>;
-  getActiveSession(surgeryId: string | null, practitionerId: string): Promise<{ session: ScribeSession | null }>;
+  getActiveSession(surgeryId: string | null, practitionerId: string): Promise<ActiveSessionResponse>;
+  /** Name and date of birth of the patient locked to a session (by the locked patient ID). */
+  getSessionPatient(sessionId: string): Promise<PatientSummary>;
   /** Present only in demo mode. */
   readonly demo?: DemoControls;
 }
@@ -63,4 +70,6 @@ export interface DemoControls {
   getScenario(): DemoScenario;
   setScenario(scenario: DemoScenario): void;
   auditEvents(): readonly AuditEvent[];
+  /** Simulates Dentally re-booking an appointment to another patient. */
+  rebook(appointmentId: string, patientId: string): void;
 }

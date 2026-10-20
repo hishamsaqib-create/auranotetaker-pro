@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { ScribeSession } from '../lib/core/session.ts';
 import { isTerminal } from '../lib/core/session.ts';
-import { DEFAULT_TIME_ZONE } from '../lib/core/time.ts';
-import type { SetupOptionsResponse } from '../lib/server/handlers.ts';
+import { DEFAULT_TIME_ZONE, MINUTE_MS } from '../lib/core/time.ts';
+import type { PatientSummary } from '../lib/dentally/types.ts';
+import type { ScribeOutcome, SessionRestriction, SetupOptionsResponse } from '../lib/server/handlers.ts';
 import type { AppBackend, CurrentUser } from './backend/types.ts';
 import { DemoBanner } from './components/DemoBanner.tsx';
 import { Header } from './components/Header.tsx';
 import { Notice } from './components/Notice.tsx';
-import type { ConfirmedPatientDisplay } from './components/PatientConfirmation.tsx';
 import { PatientConfirmation } from './components/PatientConfirmation.tsx';
 import { SessionPanel } from './components/SessionPanel.tsx';
 import type { DeviceSetup } from './components/Setup.tsx';
@@ -62,15 +62,19 @@ export function App({ backend, clock = Date.now }: AppProps) {
   );
 }
 
+/** A computer clock further out than this gets a visible warning (the app itself uses the server's time). */
+export const CLOCK_SKEW_WARNING_MS = 2 * MINUTE_MS;
+
 function Workspace({ backend, user, clock, onSignOut }: { backend: AppBackend; user: CurrentUser; clock: () => number; onSignOut: () => void }) {
-  const now = useNow(1000, clock);
+  const localNow = useNow(1000, clock);
   const [options, setOptions] = useState<SetupOptionsResponse | null>(null);
   const [optionsError, setOptionsError] = useState<string | null>(null);
   const [setup, setSetup] = useState<DeviceSetup | null>(null);
   const [editingSetup, setEditingSetup] = useState(false);
   const [session, setSession] = useState<ScribeSession | null>(null);
-  const [sessionDisplay, setSessionDisplay] = useState<ConfirmedPatientDisplay | null>(null);
-  const [finishedIds, setFinishedIds] = useState<ReadonlySet<string>>(new Set());
+  const [restriction, setRestriction] = useState<SessionRestriction | null>(null);
+  const [sessionPatient, setSessionPatient] = useState<PatientSummary | null>(null);
+  const [localOutcomes, setLocalOutcomes] = useState<Readonly<Record<string, ScribeOutcome>>>({});
 
   useEffect(() => {
     backend
@@ -91,14 +95,22 @@ function Workspace({ backend, user, clock, onSignOut }: { backend: AppBackend; u
   );
 
   const diary = useDiary(backend, clinician && !editingSetup ? clinician.practitionerId : null, clock);
+  // SAFETY (hazard H01): predictions and the clock on screen use the server's time, so a computer whose
+  // clock is wrong does not suggest the wrong appointment. A clock that is far out is also pointed out.
+  const offset = diary.clockOffsetMs ?? 0;
+  const now = localNow + offset;
+  // Declines on this screen count at once; the server's record (which survives a page refresh) wins.
+  const outcomes = useMemo(() => ({ ...localOutcomes, ...diary.scribeOutcomes }), [localOutcomes, diary.scribeOutcomes]);
 
-  // Restore an open session for this surgery after a page refresh, with its locked patient.
+  // Restore an open session for this surgery or clinician after a page refresh, with its locked patient.
   const reloadSession = useCallback(async () => {
     if (!clinician) return;
     try {
-      const { session: found } = await backend.getActiveSession(surgery?.surgeryId ?? null, clinician.practitionerId);
-      setSession(found && !isTerminal(found.status) ? found : null);
-      setSessionDisplay(null);
+      const found = await backend.getActiveSession(surgery?.surgeryId ?? null, clinician.practitionerId);
+      const open = found.session && !isTerminal(found.session.status) ? found.session : null;
+      setSession(open);
+      setRestriction(open ? found.restriction : null);
+      setSessionPatient(null);
     } catch {
       // Leave the current view as it is; the diary status shows connection problems.
     }
@@ -114,7 +126,7 @@ function Workspace({ backend, user, clock, onSignOut }: { backend: AppBackend; u
       return diary.error.code === 'DENTALLY_AUTH' ? { tone: 'bad', label: 'Dentally sign-in problem' } : { tone: 'bad', label: 'Dentally offline' };
     }
     if (diary.lastOkAt === null) return { tone: 'neutral', label: 'Checking Dentally' };
-    const age = now - diary.lastOkAt;
+    const age = localNow - diary.lastOkAt;
     if (diary.error || age > STALE_AFTER_MS) return { tone: 'warn', label: `Dentally: updated ${Math.max(1, Math.round(age / 60000))} min ago` };
     return { tone: backend.mode === 'demo' ? 'demo' : 'ok', label: backend.mode === 'demo' ? 'Demo diary' : 'Dentally connected' };
   })();
@@ -127,7 +139,7 @@ function Workspace({ backend, user, clock, onSignOut }: { backend: AppBackend; u
       now={now}
       timeZone={timeZone}
       dentally={dentallyStatus}
-      onChangeSetup={session ? undefined : () => setEditingSetup(true)}
+      onChangeSetup={session && !restriction ? undefined : () => setEditingSetup(true)}
       onSignOut={onSignOut}
     />
   );
@@ -174,26 +186,36 @@ function Workspace({ backend, user, clock, onSignOut }: { backend: AppBackend; u
     );
   }
 
+  const skewMinutes = Math.round(Math.abs(offset) / MINUTE_MS);
+
   return (
     <div className="app">
       {header}
       {banner}
       <main className="main">
+        {Math.abs(offset) > CLOCK_SKEW_WARNING_MS && (
+          <Notice tone="warn" title={`This computer's clock is ${skewMinutes} minutes ${offset > 0 ? 'slow' : 'fast'}`}>
+            AuraNoteTaker is using the correct time from its server. Ask whoever looks after the practice's computers to correct this clock.
+          </Notice>
+        )}
         {session ? (
           <SessionPanel
             key={session.sessionId}
             backend={backend}
             session={session}
-            display={sessionDisplay}
+            restriction={restriction}
+            patient={sessionPatient}
+            currentSurgeryId={surgery?.surgeryId ?? null}
             timeZone={timeZone}
             clinicianName={options.clinicians.find((c) => c.practitionerId === session.clinicianId)?.displayName ?? clinician.displayName}
             surgeryName={options.surgeries.find((x) => x.surgeryId === session.surgeryId)?.name ?? null}
             onSessionChange={setSession}
             onReload={() => void reloadSession()}
-            onClose={(finishedAppointmentId) => {
-              if (finishedAppointmentId) setFinishedIds((prev) => new Set(prev).add(finishedAppointmentId));
+            onClose={(declinedAppointmentId) => {
+              if (declinedAppointmentId) setLocalOutcomes((prev) => ({ ...prev, [declinedAppointmentId]: 'DECLINED' }));
               setSession(null);
-              setSessionDisplay(null);
+              setRestriction(null);
+              setSessionPatient(null);
               diary.refresh();
             }}
           />
@@ -206,10 +228,11 @@ function Workspace({ backend, user, clock, onSignOut }: { backend: AppBackend; u
             clinician={clinician}
             surgery={surgery}
             roomNames={roomNames}
-            finishedIds={finishedIds}
-            onConfirmed={(s, display) => {
+            outcomes={outcomes}
+            onConfirmed={(s, patient) => {
               setSession(s);
-              setSessionDisplay(display);
+              setRestriction(null);
+              setSessionPatient(patient);
             }}
             onOpenExistingSession={() => void reloadSession()}
           />

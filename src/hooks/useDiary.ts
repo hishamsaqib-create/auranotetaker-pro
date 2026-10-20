@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { DiaryAppointment } from '../../lib/core/appointments.ts';
 import { fromDiaryDto } from '../../lib/core/appointments.ts';
+import type { PredictionOptions } from '../../lib/core/prediction.ts';
+import type { ScribeOutcome } from '../../lib/server/handlers.ts';
 import type { AppBackend, DiaryReason } from '../backend/types.ts';
 import { BackendError } from '../backend/types.ts';
 
@@ -13,9 +15,15 @@ export interface DiaryState {
   appointments: DiaryAppointment[];
   timeZone: string | null;
   rejectedCount: number;
+  /** Appointments already finished with in AuraNoteTaker today, as the server knows them (survives a page refresh). */
+  scribeOutcomes: Readonly<Record<string, ScribeOutcome>>;
+  /** The clinic's prediction settings, so this screen predicts exactly as the server does. */
+  predictionOptions: Partial<PredictionOptions>;
+  /** Server time minus this computer's time, measured at the last successful fetch. Null until known. */
+  clockOffsetMs: number | null;
   loading: boolean;
   error: BackendError | null;
-  /** Time of the last successful fetch. */
+  /** Time (this computer's clock) of the last successful fetch. */
   lastOkAt: number | null;
 }
 
@@ -24,6 +32,9 @@ const empty = (practitionerId: string | null): DiaryState => ({
   appointments: [],
   timeZone: null,
   rejectedCount: 0,
+  scribeOutcomes: {},
+  predictionOptions: {},
+  clockOffsetMs: null,
   loading: practitionerId !== null,
   error: null,
   lastOkAt: null,
@@ -31,34 +42,45 @@ const empty = (practitionerId: string | null): DiaryState => ({
 
 /**
  * Today's diary for one clinician, refreshed every minute while visible and every five while hidden.
- * Switching clinician clears the previous clinician's diary immediately, and responses that arrive
- * for a clinician no longer selected are discarded, so one clinician's patients never show under another.
+ *
+ * SAFETY (hazard H01): switching clinician clears the previous clinician's diary immediately, and only
+ * the newest request's answer is used: a slow response for a clinician no longer selected, or one
+ * overtaken by a newer refresh, is discarded, so an older diary never replaces a newer one.
  */
 export function useDiary(backend: AppBackend, practitionerId: string | null, clock: () => number = Date.now) {
   const [state, setState] = useState<DiaryState>(() => empty(practitionerId));
   const current = useRef(practitionerId);
+  const latestRequest = useRef(0);
   const lastFetchAt = useRef(0);
 
   const load = useCallback(
     async (reason: DiaryReason) => {
       const id = current.current;
       if (!id) return;
-      lastFetchAt.current = clock();
+      const request = ++latestRequest.current;
+      const sentAt = clock();
+      lastFetchAt.current = sentAt;
       try {
         const res = await backend.getDiary(id, reason);
-        if (current.current !== id || res.practitionerId !== id) return; // stale response
+        if (request !== latestRequest.current || current.current !== id || res.practitionerId !== id) return; // overtaken
+        const receivedAt = clock();
+        const serverMs = Date.parse(res.fetchedAt);
         const appointments = res.appointments.map(fromDiaryDto).filter((a): a is DiaryAppointment => a !== null);
         setState({
           practitionerId: id,
           appointments,
           timeZone: res.timeZone,
           rejectedCount: res.rejectedCount + (res.appointments.length - appointments.length),
+          scribeOutcomes: res.scribeOutcomes ?? {},
+          predictionOptions: res.predictionOptions ?? {},
+          // The server read its clock somewhere between sending and receiving; the midpoint is the best estimate.
+          clockOffsetMs: Number.isFinite(serverMs) ? Math.round(serverMs - (sentAt + receivedAt) / 2) : null,
           loading: false,
           error: null,
-          lastOkAt: clock(),
+          lastOkAt: receivedAt,
         });
       } catch (err) {
-        if (current.current !== id) return;
+        if (request !== latestRequest.current || current.current !== id) return;
         const error = err instanceof BackendError ? err : new BackendError('UNKNOWN', 'The diary could not be loaded.');
         setState((s) => ({ ...s, loading: false, error }));
       }
@@ -73,7 +95,9 @@ export function useDiary(backend: AppBackend, practitionerId: string | null, clo
     void load('INITIAL');
 
     let timer: ReturnType<typeof setTimeout>;
+    let stopped = false; // a refresh still in flight when the clinician changes must not start a second timer loop
     const schedule = () => {
+      if (stopped) return;
       const delay = document.visibilityState === 'visible' ? VISIBLE_REFRESH_MS : HIDDEN_REFRESH_MS;
       timer = setTimeout(async () => {
         await load('REFRESH');
@@ -88,6 +112,7 @@ export function useDiary(backend: AppBackend, practitionerId: string | null, clo
     };
     document.addEventListener('visibilitychange', onVisible);
     return () => {
+      stopped = true;
       clearTimeout(timer);
       document.removeEventListener('visibilitychange', onVisible);
     };

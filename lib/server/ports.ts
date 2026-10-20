@@ -63,12 +63,16 @@ export interface SessionRepository {
   get(clinicId: string, sessionId: string): Promise<ScribeSession | null>;
   /** Must throw VersionConflictError when the stored version is not `expectedVersion`. */
   update(session: ScribeSession, expectedVersion: number): Promise<void>;
-  /** Non-terminal sessions in the clinic matching any of the given filters. */
+  /** Non-terminal sessions in the clinic matching any of the given filters. Must return all of them, never a truncated page. */
   findActive(clinicId: string, filter: { surgeryId?: string | null; clinicianId?: string | null; patientId?: string | null }): Promise<ScribeSession[]>;
+  /** Sessions in any status for the given Dentally appointments. */
+  findByAppointments(clinicId: string, appointmentIds: readonly string[]): Promise<ScribeSession[]>;
 }
 
 export interface AuditSink {
   append(event: AuditEvent): Promise<void>;
+  /** Whether this actor recorded an event with this dedupe key since `sinceMs`. */
+  hasRecent(clinicId: string, actorEmail: string, dedupeKey: string, sinceMs: number): Promise<boolean>;
 }
 
 export interface HandlerDeps {

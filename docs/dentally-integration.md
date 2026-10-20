@@ -34,14 +34,14 @@ States: `Pending`, `Confirmed`, `Arrived`, `In surgery`, `Completed`, `Cancelled
 
 Fields deliberately **not** used: `notes` (diary notes), `metadata`, `treatment_description`, `patient_image_url`. The diary needs none of them, and data minimisation says not to fetch what we do not need into the scribe path.
 
-List filters used: `on` (date), `practitioner_id`, `room_id`, `site_id`. Cancelled appointments are excluded by default (`cancelled=false`); the parser also drops them defensively.
+List filters used: `on` (date), `practitioner_id`, `room_id`, `site_id`, and `cancelled=false` to leave cancelled appointments out of the list. If one comes back anyway (or an appointment is cancelled between refreshes), it is kept: the diary shows it greyed out so the screen matches Dentally, it can never be suggested or chosen, and the server refuses to confirm it. Completed appointments and unrecognised states are never suggested either, but can be chosen explicitly from the diary (reception sometimes marks an appointment complete while the patient is still in the chair); the state is recorded in the session snapshot.
 
 ### Known quirks to verify in the sandbox (issue P1-03)
 
 1. **Practitioner identifier.** AuraPortal treats `user.id` (not the practitioner's top-level `id`) as the practitioner identifier. Appointments carry both `practitioner_id` and `user_id`. Confirm which one matches the practitioner list before mapping clinicians. The `Clinician` entity stores both.
 2. **Rooms endpoint and room IDs** on appointments, so surgery matching works.
 3. **Patient date of birth field** name and format.
-4. **Response envelope** for lists and single records (resource-named keys and pagination metadata). The parser accepts both singular and plural keys and stops paging on a short page.
+4. **Response envelope** for lists and single records (resource-named keys and pagination metadata). The parser accepts both singular and plural keys. Paging follows `meta.total_pages` when Dentally sends it (an empty page before the last is an error, never a silently short diary) and stops on a short page only when there is no page count.
 5. **Time zone** of `start_time`/`finish_time` and of the `on` filter (expected: ISO 8601 with offset, `on` in practice local time).
 
 ## 3. Service abstraction (`lib/dentally`)

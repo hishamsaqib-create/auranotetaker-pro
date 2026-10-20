@@ -11,9 +11,9 @@ describe('buildAuditEvent', () => {
       sessionId: 's-1',
       dentallyPatientId: 'p-1',
       dentallyAppointmentId: 'a-1',
-      details: { method: 'CONFIRMED_SUGGESTION', predictedAppointmentId: 'a-1', matchedPrediction: true },
+      details: { method: 'CONFIRMED_SUGGESTION', predictedAppointmentId: 'a-1', matchedPrediction: true, practitionerId: 'pr-1' },
     });
-    expect(e.details).toEqual({ method: 'CONFIRMED_SUGGESTION', predictedAppointmentId: 'a-1', matchedPrediction: true });
+    expect(e.details).toEqual({ method: 'CONFIRMED_SUGGESTION', predictedAppointmentId: 'a-1', matchedPrediction: true, practitionerId: 'pr-1' });
     expect(e.client).toEqual({ deviceId: null, appVersion: null });
   });
 
@@ -28,12 +28,23 @@ describe('buildAuditEvent', () => {
     }
   });
 
-  it('rejects long strings and non-primitive values (no clinical text in audit metadata)', () => {
-    expect(() =>
-      buildAuditEvent({ ...base, action: 'SESSION_CANCELLED', details: { statusBefore: 'x'.repeat(200) } }),
-    ).toThrow(AuditDetailsError);
-    expect(() =>
-      buildAuditEvent({ ...base, action: 'SESSION_STATUS_CHANGED', details: { from: { text: 'note' } } }),
-    ).toThrow(AuditDetailsError);
+  it('rejects allowlisted keys carrying free text, names or dates in the wrong place', () => {
+    const attempts: Array<[Parameters<typeof buildAuditEvent>[0]['action'], Record<string, unknown>]> = [
+      ['SESSION_CANCELLED', { reasonCode: 'Oliver Bennett' }],
+      ['SESSION_CANCELLED', { statusBefore: 'Patient was upset' }],
+      ['PATIENT_VIEWED', { purpose: 'Checking Jane' }],
+      ['DIARY_VIEWED', { date: '12/03/1986' }],
+      ['SESSION_STATUS_CHANGED', { from: { text: 'note' } }],
+      ['ACCESS_DENIED', { operation: 'x'.repeat(200) }],
+    ];
+    for (const [action, details] of attempts) {
+      expect(() => buildAuditEvent({ ...base, action, details }), JSON.stringify(details)).toThrow(AuditDetailsError);
+    }
+  });
+
+  it('requires identifiers in the identifier fields', () => {
+    expect(() => buildAuditEvent({ ...base, action: 'PATIENT_VIEWED', dentallyPatientId: 'Jane Example', details: { purpose: 'IDENTITY_CHECK' } })).toThrow(
+      AuditDetailsError,
+    );
   });
 });

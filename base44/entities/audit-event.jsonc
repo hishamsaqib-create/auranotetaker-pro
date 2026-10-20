@@ -23,6 +23,7 @@
         "app_version": { "type": "string" }
       }
     },
+    "dedupe_key": { "type": "string", "maxLength": 120, "description": "Groups repeat events such as diary views; identifiers only" },
     "prev_hash": { "type": "string" },
     "hash": { "type": "string" }
   },

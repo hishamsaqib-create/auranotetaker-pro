@@ -47,8 +47,8 @@ Initial and residual risk are provisional ratings (H/M/L) for the CSO to score o
 
 | ID | Hazard | Main causes | Designed controls | Verification | Initial → residual |
 |---|---|---|---|---|---|
-| H01 | Wrong patient associated with a session or note | Double booking, overrun, stale Dentally state, mis-tap, suggestion changing on screen | Suggestion only; ambiguity forces a choice with no default; confirm button names the patient; 1.5 s change guard; DOB and Dentally ID shown; server re-verifies with Dentally; predicted versus chosen audited; identity re-shown at export | `prediction.test.ts`, `handlers.test.ts`, `App.test.tsx` | H → L (after usability testing) |
-| H02 | Patient changes during a session | Diary refresh, clock passing into next slot, surgery change, page refresh | Lock at creation; no transition changes the patient; reassignment explicit, reasoned, audited, refused while recording; session restored by ID from the server | `session.test.ts` | H → L |
+| H01 | Wrong patient associated with a session or note | Double booking, overrun, appointment not marked complete, stale Dentally state, appointment re-booked in Dentally, wrong PC clock, mis-tap, suggestion changing on screen, two screens confirming at once | Suggestion only; ambiguity forces a choice with no default; confidence capped and the possibly-running appointment named; confirm button names the patient and waits until Dentally has returned that appointment's patient and it matches; 1.5 s change guard (also on a quick change back); DOB and Dentally ID shown; server re-verifies with Dentally and returns the identity it locked; earlier decline needs acknowledgement; simultaneous confirmations leave one session; predictions on server time; screen, server prediction and choice audited; identity re-shown at export | `prediction.test.ts`, `handlers.test.ts`, `App.test.tsx`, `hooks.test.tsx` | H → L (after usability testing) |
+| H02 | Patient changes during a session | Diary refresh, clock passing into next slot, surgery change, page refresh, appointment re-booked after confirmation | Lock at creation; no transition changes the patient; reassignment explicit, reasoned, audited, refused while recording; session restored by ID from the server and its banner looked up by the locked patient ID, with the appointment date; sessions from another surgery, an earlier day or another user offer only Cancel | `session.test.ts`, `handlers.test.ts`, `App.test.tsx` | H → L |
 | H03 | Recording runs into the next patient's appointment | Forgotten stop | Overrun detection with prominent warning and stop prompt; recording indicator always visible; never auto-switches patient | `session.test.ts` (overrun detection); Phase 2 UI tests | M → L |
 | H04 | AI states something that did not happen | Model fabrication; template pressure; "normally would" assumptions | Citation-required generation; unfilled template fields become MISSING; inference prohibited for consent, risks, medical history, radiographs, examination, diagnosis and treatment; independent review pass; adversarial evaluation set; clinician approval | Phase 3 evaluation harness | H → M |
 | H05 | Clinically important information omitted | Long conversations; poor audio; template gaps | Required template fields flag MISSING; review pass scans the transcript for unrecorded items (allergies, complications, advice); structured nurse prompts for local anaesthetic, materials, batches | Phase 3 evaluation harness | H → M |
@@ -64,9 +64,10 @@ Initial and residual risk are provisional ratings (H/M/L) for the CSO to score o
 | H15 | Speech recognition error changes meaning | Negation ("no allergies"), drug names, accents | Vocabulary hints; review pass checks negations in medical history; transcript visible during review | Phase 2 bake-off; Phase 3 evaluation | H → M |
 | H16 | Audit findings treated as verdicts or used punitively | Presentation, governance | Advisory labelling; reviewer workflow with false-positive status; governance decision on visibility (D10) | Phase 6 | M → L |
 | H17 | Dentally outage leads to identity workaround | Pressure to keep going | No new session without verification; clear message; offline path only by decision (D9) | `handlers.test.ts` | M → L |
-| H18 | Cross-clinic data exposure | Tenancy bug | Clinic resolved from staff profile; deny-all entity rules; cross-tenant tests | `handlers.test.ts`; Phase 7 | M → L |
+| H18 | Cross-clinic data exposure | Tenancy bug | Phase 1: one clinic per app (`CLINIC_KEY`) and an active StaffProfile in it required; roles never read from the user record; deny-all entity rules. Phase 7: clinic from staff profile and cross-tenant tests | `handlers.test.ts`, `base44-adapter.test.ts`; Phase 7 | M → L |
 | H19 | Background capture silently stops | Browser throttling or discarding, operating system sleep | Capture watchdog and gap markers; device policies; Phase 2 spike; desktop companion if needed | Phase 2 spike results | H → M |
 | H20 | Model or prompt change degrades notes unnoticed | Vendor model updates, prompt edits | Versions pinned per note; regression evaluation gate; CSO sign-off for changes | Phase 3 harness; change control | M → L |
+| H21 | Audit trail incomplete or misleading | Audit write fails after a change; client-supplied audit fields; storage returns partial or malformed data | Confirmation audited before the session exists, with a compensating record if creation fails; later changes audited with retries and the user told on failure; diary-view auditing decided by the server; detail values type-checked; server's own prediction recorded; storage reads page fully and reject malformed rows; transactional outbox in Phase 4 (P4-04) | `handlers.test.ts`, `audit.test.ts`, `base44-adapter.test.ts` | M → L |
 
 ## 6. Note generation safety design (Phase 3)
 
@@ -106,7 +107,12 @@ Findings use "possible" language, show their evidence, and default to UNREVIEWED
 | Base44 unavailable | No new sessions. Active capture continues into the outbox; banner shows unsynced data. |
 | Duplicate submission | Idempotency key per approved note; second attempt reports the first result. |
 | Wrong patient selected | Audited reassignment before recording or while paused; after approval, an addendum process. |
-| Overlapping appointments | Prediction returns AMBIGUOUS; the user chooses. |
+| Overlapping appointments | Prediction returns AMBIGUOUS; the user chooses. An appointment that may still be running caps confidence and is named on screen. |
+| Appointment re-booked in Dentally while on screen | The card shows Dentally's current patient once the diary refreshes, and its confirm waits for that patient's details. A confirm for the old patient is refused by the server and the diary is refreshed. |
+| Two screens confirm at the same moment | The earlier confirmation wins; the other screen is told and offered the open session. |
+| Session left open from an earlier day | Closed automatically when next found if nothing was recorded; otherwise offered for cancelling only. End-of-day closing follows in Phase 2 (P2-09). |
+| Surgery PC clock wrong | Suggestions use the server's time; the screen says the clock is out when it is more than 2 minutes wrong. |
+| Production build without its mode set | Shows a configuration error; never falls back to the demo diary. |
 
 ## 10. Safety testing and evaluation
 
@@ -128,6 +134,16 @@ Findings use "possible" language, show their evidence, and default to UNREVIEWED
 |---|---|---|
 | Prediction suggests only; ambiguity returns no default | `lib/core/prediction.ts` | `lib/core/prediction.test.ts` |
 | Double booking, overrun, stale In surgery, room mismatch, unknown state, cancelled and completed handling | `lib/core/prediction.ts` | `lib/core/prediction.test.ts` |
+| Confidence capped and the possibly-running appointment named; a low-confidence current appointment is shown for checking, never replaced by the next patient; conflicting duplicate entries dropped; warnings shown in every state | `lib/core/prediction.ts`, `src/components/PatientConfirmation.tsx` | `lib/core/prediction.test.ts`, `src/__tests__/App.test.tsx` |
+| Confirm waits for Dentally's name and DOB for exactly that appointment and patient; a different patient is a mismatch, never displayed | `src/hooks/usePatientSummaries.ts`, `src/components/PatientCard.tsx` | `src/__tests__/hooks.test.tsx`, `src/__tests__/App.test.tsx` |
+| Server returns the identity it verified; session banner looked up by the locked patient ID and shows the date | `lib/server/handlers.ts` (`confirmPatient`, `getSessionPatient`), `src/components/SessionPanel.tsx` | `lib/server/handlers.test.ts`, `src/__tests__/App.test.tsx` |
+| Earlier decline needs an audited acknowledgement; outcomes come from the server so a refresh never re-suggests a decline | `lib/server/handlers.ts` | `lib/server/handlers.test.ts`, `src/__tests__/App.test.tsx` |
+| Consent recorded only by a session member, from the session's surgery, on the day; other sessions cancel-only; earlier-day sessions with nothing recorded closed | `lib/server/handlers.ts`, `src/components/SessionPanel.tsx` | `lib/server/handlers.test.ts`, `src/__tests__/App.test.tsx` |
+| Audit first on confirmation; simultaneous confirmations leave one session; diary views audited by the server; detail values type-checked | `lib/server/handlers.ts`, `lib/core/audit.ts` | `lib/server/handlers.test.ts`, `lib/core/audit.test.ts` |
+| Predictions on server time with the clinic's settings; newest diary response wins; change guard holds on a quick change back | `src/hooks/useDiary.ts`, `src/hooks/useChangeGuard.ts`, `src/App.tsx` | `src/__tests__/hooks.test.tsx`, `src/__tests__/App.test.tsx` |
+| Diary paging follows Dentally's page count | `lib/dentally/client.ts` | `lib/dentally/client.test.ts` |
+| Storage: versioned compare-and-set writes, complete paging, malformed rows and unknown shapes rejected, no nulls written | `base44/shared/adapters/base44.ts` | `tests/base44-adapter.test.ts` |
+| Production build must name its mode; connected app will not run inside a frame | `src/config.ts`, `src/main.tsx` | `src/config.test.ts` |
 | Patient lock, reasoned reassignment, refusal while recording and after approval | `lib/core/session.ts` | `lib/core/session.test.ts` |
 | Permission required before recording; decline terminal | `lib/core/session.ts` | `lib/core/session.test.ts` |
 | Forgotten-stop detection | `lib/core/session.ts` | `lib/core/session.test.ts` |

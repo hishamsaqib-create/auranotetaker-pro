@@ -11,6 +11,7 @@ import {
   getDiary,
   getMe,
   getPatientSummary,
+  getSessionPatient,
   getSetupOptions,
   recordConsent,
 } from '../../lib/server/handlers.ts';
@@ -106,6 +107,7 @@ export function createDemoBackend(opts: DemoBackendOptions = {}): AppBackend {
       getScenario: () => mock.scenario,
       setScenario: (s) => mock.setScenario(s),
       auditEvents: () => audit.events,
+      rebook: (appointmentId, patientId) => mock.rebook(appointmentId, patientId),
     },
     async getCurrentUser() {
       if (!user) return null;
@@ -121,8 +123,10 @@ export function createDemoBackend(opts: DemoBackendOptions = {}): AppBackend {
     getDiary: (practitionerId, reason) => run(() => getDiary(ctx(), deps, { practitionerId, reason })),
     getPatientSummary: (appointmentId) => run(() => getPatientSummary(ctx(), deps, { appointmentId })),
     confirmPatient: (input) => run(() => confirmPatient(ctx(), deps, { ...input })),
-    recordConsent: (sessionId, given, expectedVersion) => run(() => recordConsent(ctx(), deps, { sessionId, given, expectedVersion })),
+    recordConsent: (sessionId, given, expectedVersion, surgeryId) =>
+      run(() => recordConsent(ctx(), deps, { sessionId, given, expectedVersion, surgeryId })),
     cancelSession: (sessionId, expectedVersion) => run(() => cancelSession(ctx(), deps, { sessionId, expectedVersion })),
     getActiveSession: (surgeryId, practitionerId) => run(() => getActiveSession(ctx(), deps, { surgeryId, practitionerId })),
+    getSessionPatient: (sessionId) => run(() => getSessionPatient(ctx(), deps, { sessionId })),
   };
 }

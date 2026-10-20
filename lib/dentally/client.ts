@@ -143,7 +143,13 @@ export class DentallyClient {
       if (!list) throw new DentallyError('BAD_RESPONSE', `Unexpected list response from ${path}`);
       items.push(...list);
       const pages = totalPages(body);
-      if (list.length < PER_PAGE || (pages !== null && page >= pages)) return items;
+      if (pages !== null) {
+        // Dentally says how many pages there are: follow that, even past a short page.
+        if (page >= pages) return items;
+        if (list.length === 0) throw new DentallyError('BAD_RESPONSE', `Dentally reported ${pages} pages from ${path} but page ${page} was empty`);
+      } else if (list.length < PER_PAGE) {
+        return items;
+      }
     }
     throw new DentallyError('BAD_RESPONSE', `More than ${MAX_PAGES} pages from ${path}; refusing to return a partial list`);
   }

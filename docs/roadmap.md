@@ -39,6 +39,8 @@ Exit criteria: all P1 issues closed; confirmation usability-tested; running agai
 
 **Done in the initial commit** (demo mode, tested): prediction engine, session state machine with patient lock and permission rules, audit builder with allowlists, read-only Dentally client with validation and mock, server handlers with re-verification, Base44 entity schemas and function entry points (not yet deployed), the main clinical screen, CI.
 
+**Hardened after an independent safety review** (20 October 2026): the confirm card and session banner can only name the patient Dentally confirms for that appointment; confidence is capped, with the reason shown, whenever another appointment may still be running; old or out-of-place sessions offer only Cancel and abandoned ones close themselves; concurrent confirmations, audit values, diary paging and the Base44 storage adapter were tightened; predictions use the server's clock. Details in [clinical-safety.md](clinical-safety.md#12-phase-1-controls-implemented).
+
 ### Phase 2: Scribe capture
 Goal: with recorded permission, live transcription plus Nurse Notes, with nothing lost.
 Exit criteria: background capture spike results recorded; all failure tests pass; STT provider chosen; DPIA signed off before the pilot.
@@ -93,9 +95,9 @@ Flags: safety = safety-critical; decision = needs a decision above; blocked = ex
 | P2-04 | Decide and, if needed, build the desktop companion (Phase 2b) | decision |
 | P2-05 | Speech-to-text provider abstraction and short-lived token function |  |
 | P2-06 | Speech-to-text bake-off with dental vocabulary | decision |
-| P2-07 | Live transcript panel with ACTIVE indicator and gap markers | safety |
+| P2-07 | Two-column scribe workspace and live transcript panel with ACTIVE indicator | safety |
 | P2-08 | Nurse Notes panel with autosave, revisions and provenance | safety |
-| P2-09 | Session lifecycle with patient lock and forgotten-stop warning | safety |
+| P2-09 | Session lifecycle: patient lock, forgotten-stop warning and end-of-day close | safety |
 | P2-10 | Local outbox and session restore after refresh or restart | safety |
 | P2-11 | Failure tests: network loss, microphone disconnect, provider outage, refresh | safety |
 | P2-12 | TranscriptSegment, NurseNote and PatientReference entities and functions |  |
@@ -121,7 +123,7 @@ Flags: safety = safety-critical; decision = needs a decision above; blocked = ex
 | P4-01 | Approved-note export to Dentally with entry confirmation | safety |
 | P4-02 | Dentally clinical note write-back via API | safety, decision, blocked |
 | P4-03 | Idempotency and duplicate submission protection | safety |
-| P4-04 | Complete audit trail and audit viewer |  |
+| P4-04 | Complete audit trail, transactional audit outbox and audit viewer |  |
 | P4-05 | Failure recovery end-to-end: Dentally, Base44 and speech-to-text outages | safety |
 | P4-06 | Explicit audited patient reassignment flow | safety |
 | P4-07 | Offline identity confirmation policy | safety, decision |

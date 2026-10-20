@@ -46,7 +46,8 @@ A staff profile can hold more than one role (Hisham is both DENTIST and CLINIC_A
 | Capability | SUPER_ADMIN | CLINIC_ADMIN | DENTIST / THERAPIST / HYGIENIST | NURSE | AUDITOR |
 |---|---|---|---|---|---|
 | See today's diary, confirm patient | | | Yes | Yes | |
-| Record patient permission, start, pause, stop | | | Yes | Yes | |
+| Record patient permission, start, pause, stop | | | Session members only | Session members only | |
+| Cancel a session before anything is recorded | | Yes | Yes | Yes | |
 | Write nurse notes | | | Yes | Yes | |
 | Generate and edit drafts | | | Own sessions | | |
 | **Approve notes** | | | **Own sessions only** | | |
@@ -56,6 +57,8 @@ A staff profile can hold more than one role (Hisham is both DENTIST and CLINIC_A
 | View audit trail | | Yes (metadata) | Own sessions | | Yes |
 | Configure integrations, staff, surgeries | Platform only | Own clinic | | | |
 | Approve Agent Knowledge changes | | With clinical lead | Propose own preferences | | |
+
+A session's members are the person who confirmed its patient and its treating clinician. Cancelling is open more widely because it can only remove a patient link, never add one, and a session left open on another screen must not block the next patient.
 
 SUPER_ADMIN is a platform role for multi-clinic operation. It has **no access to patient data** by default. Any break-glass access is time-limited, reasoned and audited.
 
@@ -67,7 +70,8 @@ SUPER_ADMIN is a platform role for multi-clinic operation. It has **no access to
 - Roles and clinic membership are never read from the Base44 user record, because users can edit their own custom user fields.
 
 **Authorisation and tenancy**
-- Every function checks role, active profile, clinic and, for clinical data, session membership.
+- Every function checks the caller's role and that they have an active profile in the app's clinic (Phase 1 serves one clinic per app, named by `CLINIC_KEY`). The clinic check inside handlers matters once one deployment serves several clinics.
+- Clinical actions on a session check membership. Recording the patient's answer requires a session member, the session's surgery and the appointment's day; a refused attempt is audited (`ACCESS_DENIED`, `NOT_SESSION_MEMBER`). Transcript, nurse note and draft functions will apply the same membership rule (P2-12, P3).
 - Entity access rules deny all direct client access to clinical, audit and configuration entities. Base44 makes entities fully open when no rules are defined, so every schema file sets rules explicitly and a test checks this.
 - Cross-tenant access tests for every function (Phase 7).
 
@@ -77,7 +81,7 @@ SUPER_ADMIN is a platform role for multi-clinic operation. It has **no access to
 
 **Secrets**
 - Backend secret vault only, per environment and per clinic. `.env.example` lists names, never values.
-- CI runs secret scanning on every push. Any committed secret is treated as compromised and rotated.
+- CI runs secret scanning on pushes to `main` and on every pull request. Any committed secret is treated as compromised and rotated.
 
 **Logging and monitoring**
 - Application and function logs contain codes and identifiers only, never names, dates of birth, transcript or note text. Handlers never log request bodies.

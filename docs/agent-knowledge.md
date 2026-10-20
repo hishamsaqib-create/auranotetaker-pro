@@ -30,7 +30,7 @@ Never Agent Knowledge: anything that states a clinical fact about a patient, any
 
 ## 3. Seed knowledge
 
-- **Aura's clinical note template library** (April 2026): 97 templates in 14 categories, Dentally native format, Palmer notation, local anaesthetic fields on every clinical template, Halo Veneers labelled as porcelain veneers made by Halo Dental Lab, brand-generic clear aligner templates. These become the first `Template` versions, mapped to the spec's 22 note types, after clinician review.
+- **Aura's clinical note template library** (April 2026): 97 templates in 14 categories, Dentally native format, Palmer notation, local anaesthetic fields on every clinical template, Halo Veneers labelled as porcelain veneers made by Halo Dental Lab, brand-generic clear aligner templates. These become the first `Template` versions, mapped to the spec's 21 note types, after clinician review.
 - A UK dental vocabulary list (materials, local anaesthetics, implant components, laboratory terms) for speech-to-text hints and validation.
 - Notation rules for the clinic's notation (Palmer for Aura, pending D5), including spoken forms ("upper right six", "UR6", "one six").
 
@@ -58,6 +58,13 @@ flowchart LR
 7. **Roll back.** Any version can be retired; the previous one becomes active again.
 
 Changes to documentation *rules* (not just phrasing) get a safety impact note and CSO review, because rules change what is flagged.
+
+### Rejected AI suggestions
+
+The spec lists rejected AI suggestions as feedback to capture. Two kinds are recorded as de-identified `AgentFeedback` (P5-02):
+
+- **Draft statements the clinician deleted.** Classified like any other edit. A deleted clinical statement is CLINICAL_CONTENT: it counts towards safety monitoring (the generator said something the clinician would not sign) and never becomes a preference. A deleted non-clinical phrase can become a style proposal ("do not write 'Patient happy'").
+- **Safety findings the reviewer dismissed**, with the reason given. These go to the proposal queue as evidence that a check may be too sensitive. A dismissal never switches a check off or lowers its severity by itself: changing a safety rule needs the clinical lead's approval and a CSO review, like any other rule change.
 
 ## 5. Google Drive
 

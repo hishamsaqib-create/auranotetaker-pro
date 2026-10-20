@@ -3,12 +3,15 @@
 //
 // SAFETY: every handler re-checks what the client claims. The caller's clinic and roles come
 // from StaffContext (resolved server-side), never from input. Confirming a patient re-fetches
-// the appointment from Dentally and refuses on any mismatch (hazards H01, H17, H18).
+// the appointment and the patient from Dentally and refuses on any mismatch, and returns the
+// identity it verified so the screen shows exactly who was locked (hazards H01, H17, H18).
 
 import type { DiaryAppointment, DiaryAppointmentDto } from '../core/appointments.ts';
 import { toDiaryDto } from '../core/appointments.ts';
 import type { AuditAction } from '../core/audit.ts';
 import { buildAuditEvent } from '../core/audit.ts';
+import type { PredictionOptions } from '../core/prediction.ts';
+import { predictLikelyPatient } from '../core/prediction.ts';
 import type { ConfirmationMethod, ScribeSession, SessionEvent } from '../core/session.ts';
 import { createSession, isTerminal, transition } from '../core/session.ts';
 import { zonedDateString } from '../core/time.ts';
@@ -21,6 +24,11 @@ import { APP_ROLES, VersionConflictError } from './ports.ts';
 export const CLINICAL_ROLES: readonly AppRole[] = ['DENTIST', 'THERAPIST', 'HYGIENIST', 'NURSE'];
 const CONFIRMATION_METHODS: readonly ConfirmationMethod[] = ['CONFIRMED_SUGGESTION', 'CHOSE_ALTERNATIVE', 'RESOLVED_AMBIGUITY', 'CHOSE_FROM_DIARY'];
 const DIARY_REASONS = ['INITIAL', 'REFRESH', 'MANUAL'] as const;
+/** A diary view by the same person, for the same clinician and day, is recorded at most once per window. */
+export const DIARY_AUDIT_WINDOW_MS = 15 * 60_000;
+/** Statuses in which nothing has been recorded yet, so an abandoned session can be closed safely. */
+const NOTHING_RECORDED = new Set<ScribeSession['status']>(['PATIENT_CONFIRMED', 'READY']);
+const SYSTEM_ACTOR = { email: 'system', roles: ['SYSTEM'] };
 
 // ---------------------------------------------------------------------------
 // Response types (also used by the web app)
@@ -39,13 +47,20 @@ export interface SetupOptionsResponse {
   surgeries: SurgeryEntry[];
 }
 
+export type ScribeOutcome = 'DECLINED' | 'APPROVED';
+
 export interface DiaryResponse {
   date: string;
   timeZone: string;
+  /** Server time when the diary was read. The web app uses it to correct for a wrong PC clock. */
   fetchedAt: string;
   practitionerId: string;
   appointments: DiaryAppointmentDto[];
   rejectedCount: number;
+  /** Appointments whose scribe session ended today, so they are not suggested again after a refresh. */
+  scribeOutcomes: Record<string, ScribeOutcome>;
+  /** The clinic's prediction settings, so the web app and the server predict the same way. */
+  predictionOptions: Partial<PredictionOptions>;
 }
 
 export interface PatientSummaryResponse extends PatientSummary {
@@ -54,6 +69,24 @@ export interface PatientSummaryResponse extends PatientSummary {
 
 export interface SessionResponse {
   session: ScribeSession;
+}
+
+export interface ConfirmPatientResponse extends SessionResponse {
+  /** The identity the server verified with Dentally and locked to the session. */
+  patient: PatientSummary;
+}
+
+/**
+ * Why an open session can only be cancelled from this screen:
+ * OTHER_SURGERY: it was started in another surgery (the clinician has moved), or this computer has no surgery set;
+ * PREVIOUS_DAY: its appointment was on an earlier day;
+ * NOT_MEMBER: the signed-in user neither confirmed its patient nor is its clinician.
+ */
+export type SessionRestriction = 'OTHER_SURGERY' | 'PREVIOUS_DAY' | 'NOT_MEMBER';
+
+export interface ActiveSessionResponse {
+  session: ScribeSession | null;
+  restriction: SessionRestriction | null;
 }
 
 export interface DentallyStatusResponse {
@@ -93,26 +126,54 @@ function reqBool(v: unknown, field: string): boolean {
   return v;
 }
 
-async function audit(
-  ctx: StaffContext,
-  deps: HandlerDeps,
-  action: AuditAction,
-  extra: { sessionId?: string | null; dentallyPatientId?: string | null; dentallyAppointmentId?: string | null; details?: Record<string, unknown> } = {},
-): Promise<void> {
+function optBool(v: unknown, field: string): boolean {
+  return v === undefined || v === null ? false : reqBool(v, field);
+}
+
+interface AuditExtra {
+  sessionId?: string | null;
+  dentallyPatientId?: string | null;
+  dentallyAppointmentId?: string | null;
+  details?: Record<string, unknown>;
+  dedupeKey?: string | null;
+  /** For system actions (expiry, race resolution) taken during this caller's request. */
+  actor?: { email: string; roles: string[] };
+}
+
+async function audit(ctx: StaffContext, deps: HandlerDeps, action: AuditAction, extra: AuditExtra = {}): Promise<void> {
+  const { actor, ...rest } = extra;
   await deps.audit.append(
     buildAuditEvent({
       clinicId: ctx.clinicId,
       occurredAtMs: deps.clock(),
-      actorEmail: ctx.email,
-      actorRoles: ctx.roles,
+      actorEmail: actor?.email ?? ctx.email,
+      actorRoles: actor?.roles ?? ctx.roles,
       action,
-      ...extra,
+      ...rest,
       client: { deviceId: ctx.deviceId ?? null, appVersion: ctx.appVersion ?? null },
     }),
   );
 }
 
+/** Audit after a state change that has already been saved. Retried; if it still fails the caller is told, never left unaware. */
+async function auditAfterChange(ctx: StaffContext, deps: HandlerDeps, action: AuditAction, extra: AuditExtra): Promise<void> {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      await audit(ctx, deps, action, extra);
+      return;
+    } catch (err) {
+      if (attempt === 2) {
+        throw new AppError('INTERNAL', 'The change was saved but could not be added to the audit trail. Please tell the practice manager.', {
+          reason: err instanceof Error ? err.name : 'UNKNOWN',
+        });
+      }
+    }
+  }
+}
+
 async function requireRole(ctx: StaffContext, deps: HandlerDeps, roles: readonly AppRole[], operation: string): Promise<void> {
+  // Defence in depth: single-clinic deployments resolve both sides from the same clinic, so this only
+  // bites in multi-clinic operation (Phase 7), where it stops a profile acting on another clinic.
   if (ctx.clinicId !== deps.clinic.clinicId) {
     await audit(ctx, deps, 'ACCESS_DENIED', { details: { operation, reasonCode: 'CLINIC' } });
     throw new AppError('FORBIDDEN', 'You do not have access to this clinic.');
@@ -121,6 +182,11 @@ async function requireRole(ctx: StaffContext, deps: HandlerDeps, roles: readonly
     await audit(ctx, deps, 'ACCESS_DENIED', { details: { operation, reasonCode: 'ROLE' } });
     throw new AppError('FORBIDDEN', 'Your role does not allow this.');
   }
+}
+
+/** The person who confirmed the session, or its clinician, may act on it. */
+function isSessionMember(ctx: StaffContext, s: ScribeSession): boolean {
+  return ctx.email === s.confirmation.confirmedBy || (ctx.clinicianId !== null && ctx.clinicianId === s.clinicianId);
 }
 
 async function callDentally<T>(fn: () => Promise<T>): Promise<T> {
@@ -140,9 +206,17 @@ async function callDentally<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
-function isToday(a: DiaryAppointment, nowMs: number, timeZone: string): boolean {
+function isTodayRange(startMs: number, finishMs: number, nowMs: number, timeZone: string): boolean {
   const today = zonedDateString(nowMs, timeZone);
-  return zonedDateString(a.startMs, timeZone) === today || zonedDateString(a.finishMs, timeZone) === today;
+  return zonedDateString(startMs, timeZone) === today || zonedDateString(finishMs, timeZone) === today;
+}
+
+const isToday = (a: DiaryAppointment, nowMs: number, tz: string) => isTodayRange(a.startMs, a.finishMs, nowMs, tz);
+const sessionIsToday = (s: ScribeSession, nowMs: number, tz: string) =>
+  isTodayRange(s.patient.appointment.startMs, s.patient.appointment.finishMs, nowMs, tz);
+
+function predictionOptions(deps: HandlerDeps): Partial<PredictionOptions> {
+  return { earlyStartMinutes: deps.clinic.settings.earlyStartMinutes, overrunMinutes: deps.clinic.settings.overrunMinutes };
 }
 
 async function requireClinician(deps: HandlerDeps, practitionerId: string): Promise<ClinicianEntry> {
@@ -165,14 +239,60 @@ async function loadSession(ctx: StaffContext, deps: HandlerDeps, sessionId: stri
   return session;
 }
 
-async function applySessionEvent(
+/**
+ * Closes a session left open from an earlier day when nothing was recorded in it. Returns true when
+ * the session was closed (so it no longer counts as open). Sessions with recordings are never closed here.
+ */
+async function expireIfAbandoned(ctx: StaffContext, deps: HandlerDeps, s: ScribeSession): Promise<boolean> {
+  const now = deps.clock();
+  if (!NOTHING_RECORDED.has(s.status) || sessionIsToday(s, now, deps.clinic.timeZone)) return false;
+  const r = transition(s, { type: 'EXPIRE', by: SYSTEM_ACTOR.email, atMs: now });
+  if (!r.ok) return false;
+  try {
+    await deps.sessions.update(r.session, s.version);
+  } catch (err) {
+    if (err instanceof VersionConflictError) return false; // changed elsewhere: leave it counted as open
+    throw err;
+  }
+  await auditAfterChange(ctx, deps, 'SESSION_STATUS_CHANGED', {
+    actor: SYSTEM_ACTOR,
+    sessionId: s.sessionId,
+    dentallyPatientId: s.patient.dentallyPatientId,
+    dentallyAppointmentId: s.patient.appointment.appointmentId,
+    details: { from: s.status, to: 'CANCELLED', reasonCode: 'EXPIRED' },
+  });
+  return true;
+}
+
+async function openSessions(
   ctx: StaffContext,
   deps: HandlerDeps,
-  sessionId: string,
+  filter: { surgeryId?: string | null; clinicianId?: string | null; patientId?: string | null },
+): Promise<ScribeSession[]> {
+  const out: ScribeSession[] = [];
+  for (const s of await deps.sessions.findActive(ctx.clinicId, filter)) {
+    if (isTerminal(s.status)) continue;
+    if (!(await expireIfAbandoned(ctx, deps, s))) out.push(s);
+  }
+  return out;
+}
+
+function outcomesFor(sessions: readonly ScribeSession[]): Record<string, ScribeOutcome> {
+  const out: Record<string, ScribeOutcome> = {};
+  for (const s of sessions) {
+    const id = s.patient.appointment.appointmentId;
+    if (s.status === 'APPROVED') out[id] = 'APPROVED';
+    else if (s.status === 'CONSENT_DECLINED' && out[id] !== 'APPROVED') out[id] = 'DECLINED';
+  }
+  return out;
+}
+
+async function applySessionEvent(
+  deps: HandlerDeps,
+  before: ScribeSession,
   expectedVersion: number,
   event: SessionEvent,
-): Promise<{ before: ScribeSession; after: ScribeSession }> {
-  const before = await loadSession(ctx, deps, sessionId);
+): Promise<ScribeSession> {
   if (before.version !== expectedVersion) {
     throw new AppError('VERSION_CONFLICT', 'This session was changed on another screen. Reload it before continuing.');
   }
@@ -186,7 +306,7 @@ async function applySessionEvent(
     }
     throw err;
   }
-  return { before, after: result.session };
+  return result.session;
 }
 
 // ---------------------------------------------------------------------------
@@ -212,7 +332,7 @@ export async function getSetupOptions(ctx: StaffContext, deps: HandlerDeps): Pro
 export async function getDiary(ctx: StaffContext, deps: HandlerDeps, input: { practitionerId?: unknown; reason?: unknown }): Promise<DiaryResponse> {
   await requireRole(ctx, deps, CLINICAL_ROLES, 'getDiary');
   const practitionerId = reqId(input.practitionerId, 'clinician');
-  const reason = input.reason === undefined ? 'INITIAL' : reqEnum(input.reason, DIARY_REASONS, 'reason');
+  if (input.reason !== undefined) reqEnum(input.reason, DIARY_REASONS, 'reason'); // informational only; never decides auditing
   await requireClinician(deps, practitionerId);
 
   const now = deps.clock();
@@ -224,12 +344,17 @@ export async function getDiary(ctx: StaffContext, deps: HandlerDeps, input: { pr
     .filter((a) => a.practitionerId === practitionerId && isToday(a, now, deps.clinic.timeZone))
     .sort((x, y) => x.startMs - y.startMs || (x.appointmentId < y.appointmentId ? -1 : 1));
 
-  // Background refreshes are not audited individually; first load and manual refreshes are.
-  if (reason !== 'REFRESH') {
+  // Every view is audited, at most once per person, clinician and day in each 15-minute window.
+  // The decision is the server's; the client cannot opt out.
+  const dedupeKey = `DIARY:${practitionerId}:${date}`;
+  if (!(await deps.audit.hasRecent(ctx.clinicId, ctx.email, dedupeKey, now - DIARY_AUDIT_WINDOW_MS))) {
     await audit(ctx, deps, 'DIARY_VIEWED', {
+      dedupeKey,
       details: { date, practitionerId, appointmentCount: appointments.length, rejectedCount: result.rejectedCount },
     });
   }
+
+  const outcomes = outcomesFor(await deps.sessions.findByAppointments(ctx.clinicId, appointments.map((a) => a.appointmentId)));
   return {
     date,
     timeZone: deps.clinic.timeZone,
@@ -237,13 +362,16 @@ export async function getDiary(ctx: StaffContext, deps: HandlerDeps, input: { pr
     practitionerId,
     appointments: appointments.map(toDiaryDto),
     rejectedCount: result.rejectedCount,
+    scribeOutcomes: outcomes,
+    predictionOptions: predictionOptions(deps),
   };
 }
 
 /**
  * Name and date of birth for the patient booked in one of today's appointments, for the
  * identity check on the confirm card. Takes an appointment, not a patient ID, so the
- * scribe cannot be used to look up arbitrary patients.
+ * scribe cannot be used to look up arbitrary patients. The response carries the patient ID,
+ * so the screen can check it still matches the diary.
  */
 export async function getPatientSummary(ctx: StaffContext, deps: HandlerDeps, input: { appointmentId?: unknown }): Promise<PatientSummaryResponse> {
   await requireRole(ctx, deps, CLINICAL_ROLES, 'getPatientSummary');
@@ -274,8 +402,9 @@ export async function confirmPatient(
     surgeryId?: unknown;
     predictedAppointmentId?: unknown;
     method?: unknown;
+    acknowledgePreviousDecline?: unknown;
   },
-): Promise<SessionResponse> {
+): Promise<ConfirmPatientResponse> {
   await requireRole(ctx, deps, CLINICAL_ROLES, 'confirmPatient');
   const appointmentId = reqId(input.appointmentId, 'appointment');
   const patientId = reqId(input.patientId, 'patient');
@@ -283,10 +412,12 @@ export async function confirmPatient(
   const surgeryId = optId(input.surgeryId, 'surgery');
   const predictedAppointmentId = optId(input.predictedAppointmentId, 'predicted appointment');
   const method = reqEnum(input.method, CONFIRMATION_METHODS, 'confirmation method');
+  const acknowledgePreviousDecline = optBool(input.acknowledgePreviousDecline, 'acknowledgement');
   await requireClinician(deps, practitionerId);
-  await requireSurgery(deps, surgeryId);
+  const surgery = await requireSurgery(deps, surgeryId);
 
   const now = deps.clock();
+  const tz = deps.clinic.timeZone;
   const appointment = await callDentally(() => deps.dentally.getAppointment(appointmentId));
   if (!appointment) throw new AppError('NOT_FOUND', 'Dentally no longer has that appointment. Refresh the diary.');
   if (appointment.patientId !== patientId) {
@@ -295,28 +426,55 @@ export async function confirmPatient(
   if (appointment.practitionerId !== practitionerId) {
     throw new AppError('PRACTITIONER_MISMATCH', 'This appointment is with a different clinician. Select that clinician first.');
   }
-  if (!isToday(appointment, now, deps.clinic.timeZone)) throw new AppError('NOT_TODAY', 'That appointment is not today.');
+  if (!isToday(appointment, now, tz)) throw new AppError('NOT_TODAY', 'That appointment is not today.');
+  // Completed and unrecognised states can still be confirmed explicitly (reception sometimes marks an
+  // appointment complete while the patient is still in the chair); the state is kept in the session snapshot.
   if (appointment.state === 'Cancelled' || appointment.state === 'Did not attend') {
     throw new AppError('APPOINTMENT_CLOSED', `Dentally shows this appointment as ${appointment.state}.`);
   }
+  const patient = await callDentally(() => deps.dentally.getPatient(patientId));
+  if (!patient || patient.patientId !== patientId) throw new AppError('NOT_FOUND', 'Dentally could not find this patient.');
 
-  // One open session per surgery and per clinician: a clinician who moved surgery, or forgot to finish,
-  // must close the earlier session before starting another (no patient crossover).
-  const inSurgery = surgeryId ? (await deps.sessions.findActive(ctx.clinicId, { surgeryId }))[0] : undefined;
-  if (inSurgery) {
-    throw new AppError('ACTIVE_SESSION_EXISTS', 'A session is already open in this surgery. Finish or cancel it first.', {
-      sessionId: inSurgery.sessionId,
-    });
+  const earlier = await deps.sessions.findByAppointments(ctx.clinicId, [appointmentId]);
+  if (earlier.some((s) => s.status === 'CONSENT_DECLINED') && !acknowledgePreviousDecline) {
+    throw new AppError('PREVIOUS_DECLINE', 'This patient declined the AI scribe for this appointment earlier. Confirm again only if they have changed their mind.');
   }
-  const samePatient = (await deps.sessions.findActive(ctx.clinicId, { patientId }))[0];
+
+  // One open session per surgery, per patient and per clinician (no patient crossover).
+  const inSurgery = surgeryId ? (await openSessions(ctx, deps, { surgeryId }))[0] : undefined;
+  if (inSurgery) {
+    throw new AppError('ACTIVE_SESSION_EXISTS', 'A session is already open in this surgery. Finish or cancel it first.', { sessionId: inSurgery.sessionId });
+  }
+  const samePatient = (await openSessions(ctx, deps, { patientId }))[0];
   if (samePatient) {
     throw new AppError('DUPLICATE_PATIENT_SESSION', 'This patient already has an open session on another screen.', { sessionId: samePatient.sessionId });
   }
-  const forClinician = (await deps.sessions.findActive(ctx.clinicId, { clinicianId: practitionerId }))[0];
+  const forClinician = (await openSessions(ctx, deps, { clinicianId: practitionerId }))[0];
   if (forClinician) {
     throw new AppError('ACTIVE_SESSION_EXISTS', 'This clinician already has an open session, possibly in another surgery. Finish or cancel it first.', {
       sessionId: forClinician.sessionId,
     });
+  }
+
+  // The server's own prediction, so near-miss figures do not depend on what the client reports.
+  let serverPredictionStatus: 'LIKELY' | 'AMBIGUOUS' | 'NONE' | 'UNAVAILABLE' = 'UNAVAILABLE';
+  let serverPredictedAppointmentId: string | null = null;
+  try {
+    const diary = await deps.dentally.getClinicianAppointments({ date: zonedDateString(now, tz), practitionerId, siteId: deps.clinic.dentallySiteId });
+    const todays = diary.appointments.filter((a) => isToday(a, now, tz));
+    const done = outcomesFor(await deps.sessions.findByAppointments(ctx.clinicId, todays.map((a) => a.appointmentId)));
+    const prediction = predictLikelyPatient({
+      nowMs: now,
+      practitionerId,
+      roomId: surgery?.roomId ?? null,
+      appointments: todays,
+      excludeAppointmentIds: Object.keys(done),
+      options: predictionOptions(deps),
+    });
+    serverPredictionStatus = prediction.status;
+    serverPredictedAppointmentId = prediction.likely?.appointment.appointmentId ?? null;
+  } catch {
+    // Prediction is for measurement only; the confirmation itself is already verified above.
   }
 
   const session = createSession({
@@ -342,39 +500,75 @@ export async function confirmPatient(
     atMs: now,
     clientDeviceId: ctx.deviceId ?? null,
   });
-  await deps.sessions.create(session);
+  const ids = { sessionId: session.sessionId, dentallyPatientId: patientId, dentallyAppointmentId: appointmentId };
+
+  // Audit first: a session never exists without its confirmation record.
   await audit(ctx, deps, 'PATIENT_CONFIRMED', {
-    sessionId: session.sessionId,
-    dentallyPatientId: patientId,
-    dentallyAppointmentId: appointmentId,
+    ...ids,
     details: {
       method,
       predictedAppointmentId,
       matchedPrediction: session.confirmation.matchedPrediction,
+      serverPredictionStatus,
+      serverPredictedAppointmentId,
+      acknowledgedPreviousDecline: acknowledgePreviousDecline,
       surgeryId,
       practitionerId,
     },
   });
-  return { session };
+  try {
+    await deps.sessions.create(session);
+  } catch (err) {
+    await audit(ctx, deps, 'SESSION_CANCELLED', { ...ids, actor: SYSTEM_ACTOR, details: { reasonCode: 'CREATE_FAILED' } }).catch(() => undefined);
+    throw err;
+  }
+
+  // Two screens can confirm at the same moment. Check again; the earliest confirmation wins and the other is cancelled.
+  const rivals = [
+    ...(surgeryId ? await deps.sessions.findActive(ctx.clinicId, { surgeryId }) : []),
+    ...(await deps.sessions.findActive(ctx.clinicId, { patientId })),
+    ...(await deps.sessions.findActive(ctx.clinicId, { clinicianId: practitionerId })),
+  ].filter((s) => !isTerminal(s.status) && s.sessionId !== session.sessionId);
+  const winner = [session, ...rivals].sort(
+    (a, b) => a.confirmation.confirmedAtMs - b.confirmation.confirmedAtMs || (a.sessionId < b.sessionId ? -1 : 1),
+  )[0]!;
+  if (winner.sessionId !== session.sessionId) {
+    await applySessionEvent(deps, session, session.version, { type: 'CANCEL', by: SYSTEM_ACTOR.email, atMs: deps.clock() });
+    await auditAfterChange(ctx, deps, 'SESSION_CANCELLED', {
+      ...ids,
+      actor: SYSTEM_ACTOR,
+      details: { statusBefore: session.status, reasonCode: 'CONCURRENT_CONFIRMATION' },
+    });
+    throw new AppError('ACTIVE_SESSION_EXISTS', 'Another screen opened a session at the same moment. Use that session.', { sessionId: winner.sessionId });
+  }
+
+  return { session, patient };
 }
 
 /** Records the patient's answer to "may we use the AI scribe today?". A decline ends the session. */
 export async function recordConsent(
   ctx: StaffContext,
   deps: HandlerDeps,
-  input: { sessionId?: unknown; given?: unknown; expectedVersion?: unknown },
+  input: { sessionId?: unknown; given?: unknown; expectedVersion?: unknown; surgeryId?: unknown },
 ): Promise<SessionResponse> {
   await requireRole(ctx, deps, CLINICAL_ROLES, 'recordConsent');
   const sessionId = reqId(input.sessionId, 'session');
   const given = reqBool(input.given, 'answer');
   const expectedVersion = reqInt(input.expectedVersion, 'version');
-  const { before, after } = await applySessionEvent(ctx, deps, sessionId, expectedVersion, {
-    type: 'RECORD_CONSENT',
-    given,
-    by: ctx.email,
-    atMs: deps.clock(),
-  });
-  await audit(ctx, deps, 'CONSENT_RECORDED', {
+  const surgeryId = optId(input.surgeryId, 'surgery');
+  const before = await loadSession(ctx, deps, sessionId);
+  if (!isSessionMember(ctx, before)) {
+    await audit(ctx, deps, 'ACCESS_DENIED', { sessionId, details: { operation: 'recordConsent', reasonCode: 'NOT_SESSION_MEMBER' } });
+    throw new AppError('FORBIDDEN', 'Only the person who confirmed this patient, or the treating clinician, can record the answer.');
+  }
+  if (before.surgeryId !== null && surgeryId !== before.surgeryId) {
+    throw new AppError('SURGERY_MISMATCH', 'This session belongs to another surgery. Record the answer there, or cancel the session.');
+  }
+  if (!sessionIsToday(before, deps.clock(), deps.clinic.timeZone)) {
+    throw new AppError('NOT_TODAY', 'This session is from an earlier day. Cancel it and start a new one.');
+  }
+  const after = await applySessionEvent(deps, before, expectedVersion, { type: 'RECORD_CONSENT', given, by: ctx.email, atMs: deps.clock() });
+  await auditAfterChange(ctx, deps, 'CONSENT_RECORDED', {
     sessionId,
     dentallyPatientId: after.patient.dentallyPatientId,
     dentallyAppointmentId: after.patient.appointment.appointmentId,
@@ -383,43 +577,75 @@ export async function recordConsent(
   return { session: after };
 }
 
-/** Cancels a session before anything was recorded (for example the wrong patient was confirmed). */
+/**
+ * Cancels a session before anything was recorded (wrong patient, abandoned, another surgery's).
+ * Any clinical user or the practice manager may do this: it removes a patient link, it never adds one.
+ */
 export async function cancelSession(
   ctx: StaffContext,
   deps: HandlerDeps,
   input: { sessionId?: unknown; expectedVersion?: unknown },
 ): Promise<SessionResponse> {
-  await requireRole(ctx, deps, CLINICAL_ROLES, 'cancelSession');
+  await requireRole(ctx, deps, [...CLINICAL_ROLES, 'CLINIC_ADMIN'], 'cancelSession');
   const sessionId = reqId(input.sessionId, 'session');
   const expectedVersion = reqInt(input.expectedVersion, 'version');
-  const { before, after } = await applySessionEvent(ctx, deps, sessionId, expectedVersion, {
-    type: 'CANCEL',
-    by: ctx.email,
-    atMs: deps.clock(),
-  });
-  await audit(ctx, deps, 'SESSION_CANCELLED', {
+  const before = await loadSession(ctx, deps, sessionId);
+  const after = await applySessionEvent(deps, before, expectedVersion, { type: 'CANCEL', by: ctx.email, atMs: deps.clock() });
+  await auditAfterChange(ctx, deps, 'SESSION_CANCELLED', {
     sessionId,
     dentallyPatientId: after.patient.dentallyPatientId,
     dentallyAppointmentId: after.patient.appointment.appointmentId,
-    details: { statusBefore: before.status },
+    details: { statusBefore: before.status, reasonCode: 'USER_CANCELLED' },
   });
   return { session: after };
 }
 
-/** The open session for this surgery or clinician, so a refreshed page restores it with its locked patient. */
+/**
+ * The open session for this surgery, or the clinician's open session elsewhere, so a refreshed page
+ * restores it with its locked patient and an abandoned one can be found and cancelled. A session this
+ * user could not continue here (another surgery, an earlier day, someone else's) comes back with a
+ * restriction, and the screen offers only Cancel for it.
+ */
 export async function getActiveSession(
   ctx: StaffContext,
   deps: HandlerDeps,
   input: { surgeryId?: unknown; practitionerId?: unknown },
-): Promise<{ session: ScribeSession | null }> {
+): Promise<ActiveSessionResponse> {
   await requireRole(ctx, deps, CLINICAL_ROLES, 'getActiveSession');
   const surgeryId = optId(input.surgeryId, 'surgery');
   const practitionerId = optId(input.practitionerId, 'clinician');
   if (!surgeryId && !practitionerId) throw new AppError('VALIDATION', 'Give a surgery or a clinician.');
-  // This surgery's open session first, then any open session for the clinician (they may have moved surgery).
-  const inSurgery = surgeryId ? await deps.sessions.findActive(ctx.clinicId, { surgeryId }) : [];
-  const forClinician = practitionerId ? await deps.sessions.findActive(ctx.clinicId, { clinicianId: practitionerId }) : [];
-  return { session: [...inSurgery, ...forClinician].find((s) => !isTerminal(s.status)) ?? null };
+  const inSurgery = surgeryId ? await openSessions(ctx, deps, { surgeryId }) : [];
+  const forClinician = practitionerId ? await openSessions(ctx, deps, { clinicianId: practitionerId }) : [];
+  const session = inSurgery[0] ?? forClinician[0] ?? null;
+  if (!session) return { session: null, restriction: null };
+  // Mirrors recordConsent's checks, so the screen never offers an action the server will refuse.
+  const restriction: SessionRestriction | null =
+    session.surgeryId !== null && session.surgeryId !== surgeryId
+      ? 'OTHER_SURGERY'
+      : !sessionIsToday(session, deps.clock(), deps.clinic.timeZone)
+        ? 'PREVIOUS_DAY'
+        : !isSessionMember(ctx, session)
+          ? 'NOT_MEMBER'
+          : null;
+  return { session, restriction };
+}
+
+/** Name and date of birth of the patient locked to a session, looked up by the locked patient ID (never by appointment). */
+export async function getSessionPatient(ctx: StaffContext, deps: HandlerDeps, input: { sessionId?: unknown }): Promise<PatientSummary> {
+  await requireRole(ctx, deps, CLINICAL_ROLES, 'getSessionPatient');
+  const sessionId = reqId(input.sessionId, 'session');
+  const session = await loadSession(ctx, deps, sessionId);
+  const patientId = session.patient.dentallyPatientId;
+  const patient = await callDentally(() => deps.dentally.getPatient(patientId));
+  if (!patient || patient.patientId !== patientId) throw new AppError('NOT_FOUND', 'Dentally could not find the patient for this session.');
+  await audit(ctx, deps, 'PATIENT_VIEWED', {
+    sessionId,
+    dentallyPatientId: patientId,
+    dentallyAppointmentId: session.patient.appointment.appointmentId,
+    details: { purpose: 'SESSION_BANNER' },
+  });
+  return patient;
 }
 
 /** Connection status for the header. No patient data. */

@@ -4,7 +4,8 @@
 // SAFETY: this module only ever *suggests*. It never selects a patient, never creates
 // a session and has no side effects. When the diary does not point clearly at one
 // patient it returns AMBIGUOUS (the user must choose, with no default) or NONE.
-// See docs/clinical-safety.md (hazard H01) and docs/architecture.md section 5.2.
+// Confidence is capped, with a warning, whenever another appointment may still be
+// running. See docs/clinical-safety.md (hazard H01) and docs/architecture.md section 5.2.
 
 import type { DiaryAppointment } from './appointments.ts';
 import { isClosedState } from './appointments.ts';
@@ -15,19 +16,22 @@ export interface PredictionOptions {
   earlyStartMinutes: number;
   /** An appointment whose scheduled finish passed within this many minutes, and is not completed, counts as overrunning. */
   overrunMinutes: number;
-  /** "In surgery" more than this many minutes after the scheduled finish is treated as out of date. */
+  /** "In surgery" more than this many minutes after the scheduled finish is treated as possibly out of date. */
   staleInSurgeryMinutes: number;
+  /** "In surgery" more than this many minutes after the scheduled finish is ignored altogether (never updated). */
+  ignoreInSurgeryAfterMinutes: number;
   /** "In surgery" is only believed from this many minutes before the scheduled start (patients taken in early). */
   earlyInSurgeryMinutes: number;
 }
 
 // Starting values. Tune per clinic (Clinic.settings) once real diary behaviour is known (issue P1-07).
-// A practice that leaves appointments "In surgery" long after they finish would otherwise see
-// constant ambiguity, which trains people to click through warnings; hence the 30-minute staleness cut-off.
+// A practice that leaves appointments "In surgery" long after they finish would otherwise see constant
+// ambiguity, which trains people to click through warnings; hence the staleness and ignore cut-offs.
 export const DEFAULT_PREDICTION_OPTIONS: Readonly<PredictionOptions> = Object.freeze({
   earlyStartMinutes: 10,
   overrunMinutes: 30,
   staleInSurgeryMinutes: 30,
+  ignoreInSurgeryAfterMinutes: 120,
   earlyInSurgeryMinutes: 60,
 });
 
@@ -73,12 +77,15 @@ export interface Candidate {
 export type PredictionWarningCode =
   | 'DOUBLE_BOOKED'
   | 'PREVIOUS_STILL_IN_SURGERY'
+  | 'PREVIOUS_NOT_FINISHED'
   | 'MULTIPLE_CANDIDATES'
+  | 'NEEDS_CHECK'
   | 'ROOM_MISMATCH'
   | 'UNKNOWN_STATE'
   | 'STALE_IN_SURGERY'
   | 'INVALID_APPOINTMENT_TIMES'
-  | 'DUPLICATE_APPOINTMENT';
+  | 'DUPLICATE_APPOINTMENT'
+  | 'CONFLICTING_DUPLICATE';
 
 export interface PredictionWarning {
   code: PredictionWarningCode;
@@ -91,8 +98,10 @@ export interface PredictionResult {
   status: PredictionStatus;
   /** Set only when status is LIKELY. */
   likely: Candidate | null;
-  /** All candidates, best first. For AMBIGUOUS the competing top-tier candidates come first. */
+  /** All candidates, best first. For AMBIGUOUS the candidates to choose between come first. */
   candidates: Candidate[];
+  /** For AMBIGUOUS: the candidates the user must choose between (one or more). Empty otherwise. */
+  choices: Candidate[];
   warnings: PredictionWarning[];
   /** The clinician's next appointment that starts after now (for NONE and after a session ends). */
   nextAppointment: DiaryAppointment | null;
@@ -125,22 +134,35 @@ function distanceFromNow(a: DiaryAppointment, now: number): number {
   return 0;
 }
 
+const sameBooking = (a: DiaryAppointment, b: DiaryAppointment) =>
+  a.patientId === b.patientId && a.practitionerId === b.practitionerId && a.startMs === b.startMs && a.finishMs === b.finishMs;
+
 export function predictLikelyPatient(input: PredictionInput): PredictionResult {
   const opts: PredictionOptions = { ...DEFAULT_PREDICTION_OPTIONS, ...input.options };
   const now = input.nowMs;
   const excluded = new Set(input.excludeAppointmentIds ?? []);
   const warnings: PredictionWarning[] = [];
 
-  // 1. De-duplicate, keep the clinician's own appointments, drop unreadable times.
-  const seen = new Set<string>();
-  const own: DiaryAppointment[] = [];
+  // 1. Duplicates: identical copies are collapsed; copies that disagree (different patient, clinician
+  //    or times under one ID) mean the diary cannot be trusted for that ID, so all copies are dropped.
+  const byId = new Map<string, DiaryAppointment>();
+  const conflicting = new Set<string>();
   for (const a of input.appointments) {
-    if (seen.has(a.appointmentId)) {
+    const prev = byId.get(a.appointmentId);
+    if (!prev) {
+      byId.set(a.appointmentId, a);
+    } else if (sameBooking(prev, a)) {
       addWarning(warnings, 'DUPLICATE_APPOINTMENT', [a.appointmentId]);
-      continue;
+    } else {
+      conflicting.add(a.appointmentId);
+      addWarning(warnings, 'CONFLICTING_DUPLICATE', [a.appointmentId]);
     }
-    seen.add(a.appointmentId);
-    if (a.practitionerId !== input.practitionerId) continue;
+  }
+
+  // 2. The clinician's own appointments with readable times.
+  const own: DiaryAppointment[] = [];
+  for (const a of byId.values()) {
+    if (conflicting.has(a.appointmentId) || a.practitionerId !== input.practitionerId) continue;
     if (!Number.isFinite(a.startMs) || !Number.isFinite(a.finishMs) || a.finishMs <= a.startMs) {
       addWarning(warnings, 'INVALID_APPOINTMENT_TIMES', [a.appointmentId]);
       continue;
@@ -148,10 +170,10 @@ export function predictLikelyPatient(input: PredictionInput): PredictionResult {
     own.push(a);
   }
 
-  // 2. Only real, open appointments with a patient can be suggested.
+  // 3. Only real, open appointments with a patient can be suggested.
   const eligible = own.filter((a) => a.patientId !== null && !isClosedState(a.state) && !excluded.has(a.appointmentId));
 
-  // 3. Classify each eligible appointment.
+  // 4. Classify each eligible appointment.
   const candidates: Candidate[] = [];
   for (const a of eligible) {
     const signals: Signal[] = [];
@@ -159,8 +181,9 @@ export function predictLikelyPatient(input: PredictionInput): PredictionResult {
     const minutesPastFinish = (now - a.finishMs) / MINUTE_MS;
 
     const inSurgery = a.state === 'In surgery';
-    const staleInSurgery = inSurgery && minutesPastFinish > opts.staleInSurgeryMinutes;
-    const plausibleInSurgery = inSurgery && !staleInSurgery && minutesToStart <= opts.earlyInSurgeryMinutes;
+    const ignoredInSurgery = inSurgery && minutesPastFinish > opts.ignoreInSurgeryAfterMinutes;
+    const staleInSurgery = inSurgery && !ignoredInSurgery && minutesPastFinish > opts.staleInSurgeryMinutes;
+    const plausibleInSurgery = inSurgery && !staleInSurgery && !ignoredInSurgery && minutesToStart <= opts.earlyInSurgeryMinutes;
     const within = a.startMs <= now && now < a.finishMs;
     const startsSoon = now < a.startMs && minutesToStart <= opts.earlyStartMinutes;
     const overrunning = now >= a.finishMs && minutesPastFinish <= opts.overrunMinutes;
@@ -209,7 +232,7 @@ export function predictLikelyPatient(input: PredictionInput): PredictionResult {
     candidates.push({ appointment: a, tier, confidence, signals });
   }
 
-  // 4. Rank: tier, then in-surgery first, then closeness to now, then start time, then ID (deterministic).
+  // 5. Rank: tier, then in-surgery first, then closeness to now, then start time, then ID (deterministic).
   candidates.sort((x, y) => {
     if (x.tier !== y.tier) return x.tier - y.tier;
     const xs = has(x, 'IN_SURGERY_STATE') ? 0 : 1;
@@ -227,10 +250,11 @@ export function predictLikelyPatient(input: PredictionInput): PredictionResult {
       .filter((a) => a.startMs > now)
       .sort((x, y) => x.startMs - y.startMs || (x.appointmentId < y.appointmentId ? -1 : 1))[0] ?? null;
 
-  const result = (status: PredictionStatus, likely: Candidate | null): PredictionResult => ({
+  const result = (status: PredictionStatus, likely: Candidate | null, choices: Candidate[] = []): PredictionResult => ({
     status,
     likely,
     candidates,
+    choices,
     warnings,
     nextAppointment,
     evaluatedAtMs: now,
@@ -253,11 +277,28 @@ export function predictLikelyPatient(input: PredictionInput): PredictionResult {
     } else {
       addWarning(warnings, 'MULTIPLE_CANDIDATES', ids);
     }
-    return result('AMBIGUOUS', null);
+    return result('AMBIGUOUS', null, top);
   }
 
-  // A single top candidate. Only HIGH or MEDIUM confidence is offered as "likely"; LOW needs an explicit choice.
-  if (first.confidence === 'LOW') return result('NONE', null);
+  // A single top candidate whose details conflict with this computer's setup: show it, but make the
+  // user check. Never turn a current appointment into "nothing now" and offer the next patient instead.
+  if (first.confidence === 'LOW') {
+    addWarning(warnings, 'NEEDS_CHECK', [first.appointment.appointmentId]);
+    return result('AMBIGUOUS', null, [first]);
+  }
+
+  // Another appointment may still be running (overrunning, or still marked In surgery): cap confidence and say so.
+  const unfinished = candidates.filter(
+    (c) => c !== first && (has(c, 'OVERRUNNING') || has(c, 'IN_SURGERY_STATE') || has(c, 'STALE_IN_SURGERY')),
+  );
+  if (unfinished.length > 0) {
+    addWarning(
+      warnings,
+      'PREVIOUS_NOT_FINISHED',
+      unfinished.map((c) => c.appointment.appointmentId),
+    );
+    if (first.confidence === 'HIGH') first.confidence = 'MEDIUM';
+  }
   return result('LIKELY', first);
 }
 
@@ -328,23 +369,45 @@ export function explainCandidate(c: Candidate, ctx: ExplainContext): string[] {
   return lines;
 }
 
-export function explainWarning(w: PredictionWarning): string {
+/** Optional context so warnings can name the appointments' times. */
+export interface WarningContext {
+  timeZone: string;
+  appointments: readonly DiaryAppointment[];
+}
+
+function timesOf(w: PredictionWarning, ctx?: WarningContext): string | null {
+  if (!ctx) return null;
+  const ranges = w.appointmentIds
+    .map((id) => ctx.appointments.find((a) => a.appointmentId === id))
+    .filter((a): a is DiaryAppointment => a !== undefined)
+    .map((a) => formatTimeRange(a.startMs, a.finishMs, ctx.timeZone));
+  return ranges.length ? ranges.join(' and ') : null;
+}
+
+export function explainWarning(w: PredictionWarning, ctx?: WarningContext): string {
+  const times = timesOf(w, ctx);
   switch (w.code) {
     case 'DOUBLE_BOOKED':
       return 'Two appointments for this clinician overlap now. Check who is in the chair.';
     case 'PREVIOUS_STILL_IN_SURGERY':
       return 'The previous patient is still marked In surgery and the next appointment has started. Check who is in the chair.';
+    case 'PREVIOUS_NOT_FINISHED':
+      return `${times ? `The ${times} appointment is` : 'An earlier appointment is'} not marked completed in Dentally and may still be running. Check who is in the chair.`;
     case 'MULTIPLE_CANDIDATES':
       return 'More than one appointment could be the current one. Check who is in the chair.';
+    case 'NEEDS_CHECK':
+      return "This appointment could be the current one, but its details in Dentally don't match this computer's setup. Check who is in the chair.";
     case 'ROOM_MISMATCH':
-      return 'This appointment is booked in a different surgery from the one selected on this computer.';
+      return 'An appointment is booked in a different surgery from the one selected on this computer.';
     case 'UNKNOWN_STATE':
       return 'Dentally returned an appointment status this version does not recognise.';
     case 'STALE_IN_SURGERY':
-      return 'An earlier appointment is still marked In surgery long after it was due to finish.';
+      return `${times ? `The ${times} appointment is` : 'An earlier appointment is'} still marked In surgery long after it was due to finish.`;
     case 'INVALID_APPOINTMENT_TIMES':
       return 'An appointment with unreadable times was ignored.';
     case 'DUPLICATE_APPOINTMENT':
       return 'A duplicated diary entry was ignored.';
+    case 'CONFLICTING_DUPLICATE':
+      return 'Dentally returned two different bookings under one appointment ID. That appointment is not shown as a suggestion; check the diary in Dentally.';
   }
 }

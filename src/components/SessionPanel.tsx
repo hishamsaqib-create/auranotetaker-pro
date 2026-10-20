@@ -1,45 +1,71 @@
 import { useEffect, useState } from 'react';
 import type { ScribeSession } from '../../lib/core/session.ts';
-import { formatCalendarDate, formatTimeRange } from '../../lib/core/time.ts';
+import { formatCalendarDate, formatTimeRange, zonedDateString } from '../../lib/core/time.ts';
+import type { PatientSummary } from '../../lib/dentally/types.ts';
+import type { SessionRestriction } from '../../lib/server/handlers.ts';
 import type { AppBackend } from '../backend/types.ts';
 import { BackendError } from '../backend/types.ts';
 import { LockIcon } from './icons.tsx';
 import { Notice } from './Notice.tsx';
-import type { ConfirmedPatientDisplay } from './PatientConfirmation.tsx';
 
 export interface SessionPanelProps {
   backend: AppBackend;
   session: ScribeSession;
-  display: ConfirmedPatientDisplay | null;
+  /** Set when this session cannot be continued from this computer: only Cancel is offered. */
+  restriction: SessionRestriction | null;
+  /** The identity the server verified at confirmation, when this screen did the confirming. */
+  patient: PatientSummary | null;
+  /** The surgery this computer is set up for. */
+  currentSurgeryId: string | null;
   timeZone: string;
   clinicianName: string;
+  /** The surgery the session was started in. */
   surgeryName: string | null;
   onSessionChange: (session: ScribeSession) => void;
-  /** Close the panel. `finishedAppointmentId` is set when the appointment is done with (patient declined). */
-  onClose: (finishedAppointmentId: string | null) => void;
+  /** Close the panel. `declinedAppointmentId` is set when the patient declined the scribe. */
+  onClose: (declinedAppointmentId: string | null) => void;
   onReload: () => void;
 }
 
+type PatientDisplay = { status: 'ok'; patient: PatientSummary } | { status: 'loading' } | { status: 'error' };
+
 const firstName = (name: string) => name.split(' ')[0] ?? name;
 
+/** Errors that mean the screen's view of the session is out of date. */
+const RELOAD_AFTER = new Set(['VERSION_CONFLICT', 'SURGERY_MISMATCH', 'NOT_TODAY', 'FORBIDDEN', 'SESSION_TRANSITION_REFUSED']);
+
+/**
+ * The open session, with its locked patient always on screen.
+ *
+ * SAFETY (hazards H01, H18): the banner names the patient by the ID locked to the session (looked up
+ * again by that ID after a page refresh, never by appointment, which Dentally can re-book). A session
+ * this computer cannot continue offers only Cancel, mirroring the server's checks.
+ */
 export function SessionPanel(p: SessionPanelProps) {
-  const [display, setDisplay] = useState<ConfirmedPatientDisplay | null>(p.display);
+  const lockedId = p.session.patient.dentallyPatientId;
+  const [display, setDisplay] = useState<PatientDisplay>(() =>
+    p.patient && p.patient.patientId === lockedId ? { status: 'ok', patient: p.patient } : { status: 'loading' },
+  );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<BackendError | null>(null);
   const appt = p.session.patient.appointment;
+  const s = p.session;
 
-  // After a page refresh only the session is known; look the patient's name up again for the banner.
+  // After a page refresh only the session is known: look its patient up again by the locked patient ID.
   useEffect(() => {
-    if (display) return;
+    if (display.status !== 'loading') return;
     let cancelled = false;
     p.backend
-      .getPatientSummary(appt.appointmentId)
-      .then((s) => !cancelled && setDisplay({ displayName: s.displayName, dateOfBirth: s.dateOfBirth }))
-      .catch(() => !cancelled && setDisplay({ displayName: `Patient ${p.session.patient.dentallyPatientId}`, dateOfBirth: null }));
+      .getSessionPatient(s.sessionId)
+      .then((patient) => {
+        if (cancelled) return;
+        setDisplay(patient.patientId === lockedId ? { status: 'ok', patient } : { status: 'error' });
+      })
+      .catch(() => !cancelled && setDisplay({ status: 'error' }));
     return () => {
       cancelled = true;
     };
-  }, [display, p.backend, appt.appointmentId, p.session.patient.dentallyPatientId]);
+  }, [display.status, p.backend, s.sessionId, lockedId]);
 
   async function act(fn: () => Promise<{ session: ScribeSession }>, after?: (s: ScribeSession) => void) {
     setBusy(true);
@@ -55,9 +81,14 @@ export function SessionPanel(p: SessionPanelProps) {
     }
   }
 
-  const name = display?.displayName ?? 'Loading patient…';
-  const first = display ? firstName(display.displayName) : 'the patient';
-  const s = p.session;
+  const cancel = () => void act(() => p.backend.cancelSession(s.sessionId, s.version), () => p.onClose(null));
+  const answer = (given: boolean) => void act(() => p.backend.recordConsent(s.sessionId, given, s.version, p.currentSurgeryId));
+
+  const name = display.status === 'ok' ? display.patient.displayName : display.status === 'loading' ? 'Loading patient…' : `Patient ${lockedId}`;
+  const first = display.status === 'ok' ? firstName(display.patient.displayName) : 'the patient';
+  const dob = display.status === 'ok' ? (formatCalendarDate(display.patient.dateOfBirth) ?? 'Not recorded') : display.status === 'loading' ? '…' : 'Not available';
+  const nothingRecorded = s.status === 'PATIENT_CONFIRMED' || s.status === 'READY';
+  const where = p.surgeryName ?? 'another surgery';
 
   return (
     <div className="session">
@@ -67,18 +98,21 @@ export function SessionPanel(p: SessionPanelProps) {
           <span>Locked to this session</span>
         </div>
         <p className="locked-name">{name}</p>
+        {display.status === 'error' && <p className="locked-note">The name could not be loaded from Dentally. The session is still locked to this patient ID.</p>}
         <dl className="locked-facts">
           <div>
             <dt>Date of birth</dt>
-            <dd>{display ? (formatCalendarDate(display.dateOfBirth) ?? 'Not recorded') : '…'}</dd>
+            <dd>{dob}</dd>
           </div>
           <div>
             <dt>Dentally ID</dt>
-            <dd className="mono-digits">{s.patient.dentallyPatientId}</dd>
+            <dd className="mono-digits">{lockedId}</dd>
           </div>
           <div>
             <dt>Appointment</dt>
             <dd>
+              {/* The date is always shown, so a session left over from another day cannot pass for today's. */}
+              {formatCalendarDate(zonedDateString(appt.startMs, p.timeZone))},{' '}
               <span className="mono-digits">{formatTimeRange(appt.startMs, appt.finishMs, p.timeZone)}</span>
               {appt.reason ? `, ${appt.reason}` : ''}
             </dd>
@@ -98,7 +132,7 @@ export function SessionPanel(p: SessionPanelProps) {
           tone="bad"
           title={error.message}
           action={
-            error.code === 'VERSION_CONFLICT' ? (
+            RELOAD_AFTER.has(error.code) ? (
               <button type="button" className="button button-secondary" onClick={p.onReload}>
                 Reload session
               </button>
@@ -107,75 +141,94 @@ export function SessionPanel(p: SessionPanelProps) {
         />
       )}
 
-      {s.status === 'PATIENT_CONFIRMED' && (
-        <section className="step" aria-labelledby="consent-heading">
-          <h1 id="consent-heading" className="state-title">
-            Has {first} agreed to the AI scribe for this appointment?
+      {p.restriction ? (
+        <section className="step" aria-labelledby="restricted-heading">
+          <h1 id="restricted-heading" className="state-title">
+            {p.restriction === 'OTHER_SURGERY'
+              ? `This session is open in ${where}`
+              : p.restriction === 'PREVIOUS_DAY'
+                ? 'This session is from an earlier day'
+                : 'Someone else is running this session'}
           </h1>
           <p className="state-lead">
-            You could say: "We use an assistant that listens to the appointment and drafts my notes. I check and approve everything, and the
-            audio isn't kept. Are you happy for it to be used today?"
+            {p.restriction === 'OTHER_SURGERY'
+              ? `${p.clinicianName}'s session for this patient was started in ${where}. Continue it there, or cancel it here if it is no longer needed.`
+              : p.restriction === 'PREVIOUS_DAY'
+                ? "It was never finished and cannot be continued. Cancel it to start today's sessions."
+                : `${s.confirmation.confirmedBy} confirmed this patient. Only they or ${p.clinicianName} can record the patient's answer. If the session is no longer needed, cancel it.`}
+            {nothingRecorded ? ' Nothing has been recorded.' : ''}
           </p>
           <div className="actions">
-            <button type="button" className="button button-primary" disabled={busy} onClick={() => void act(() => p.backend.recordConsent(s.sessionId, true, s.version))}>
-              Yes, {first} agreed
-            </button>
-            <button type="button" className="button button-secondary" disabled={busy} onClick={() => void act(() => p.backend.recordConsent(s.sessionId, false, s.version))}>
-              No, {first} declined
+            <button type="button" className="button button-secondary" disabled={busy} onClick={cancel}>
+              Cancel this session
             </button>
           </div>
-          <button
-            type="button"
-            className="link-button step-escape"
-            disabled={busy}
-            onClick={() => void act(() => p.backend.cancelSession(s.sessionId, s.version), () => p.onClose(null))}
-          >
-            Wrong patient? Cancel this session
-          </button>
         </section>
-      )}
+      ) : (
+        <>
+          {s.status === 'PATIENT_CONFIRMED' && (
+            <section className="step" aria-labelledby="consent-heading">
+              <h1 id="consent-heading" className="state-title">
+                Has {first} agreed to the AI scribe for this appointment?
+              </h1>
+              <p className="state-lead">
+                You could say: "We use an assistant that listens to the appointment and drafts my notes. I check and approve everything, and
+                the audio isn't kept. Are you happy for it to be used today?"
+              </p>
+              <div className="actions">
+                <button type="button" className="button button-primary" disabled={busy} onClick={() => answer(true)}>
+                  Yes, {first} agreed
+                </button>
+                <button type="button" className="button button-secondary" disabled={busy} onClick={() => answer(false)}>
+                  No, {first} declined
+                </button>
+              </div>
+              <button type="button" className="link-button step-escape" disabled={busy} onClick={cancel}>
+                Wrong patient? Cancel this session
+              </button>
+            </section>
+          )}
 
-      {s.status === 'READY' && (
-        <section className="step" aria-labelledby="ready-heading">
-          <h1 id="ready-heading" className="state-title">
-            Ready to record
-          </h1>
-          <p className="state-lead">
-            {first} agreed. Recording arrives in Phase 2 of the build, so this version stops here. Nothing has been recorded.
-          </p>
-          <div className="actions">
-            <button type="button" className="button button-record" disabled aria-describedby="record-note">
-              Start scribe
-            </button>
-            <button
-              type="button"
-              className="button button-secondary"
-              disabled={busy}
-              onClick={() => void act(() => p.backend.cancelSession(s.sessionId, s.version), () => p.onClose(null))}
-            >
-              End session
-            </button>
-          </div>
-          <p id="record-note" className="visually-hidden">
-            Recording is not available in this version.
-          </p>
-        </section>
-      )}
+          {s.status === 'READY' && (
+            <section className="step" aria-labelledby="ready-heading">
+              <h1 id="ready-heading" className="state-title">
+                Ready to record
+              </h1>
+              <p className="state-lead">
+                {first === 'the patient' ? 'The patient' : first} agreed. Recording arrives in Phase 2 of the build, so this version stops here.
+                Nothing has been recorded.
+              </p>
+              <div className="actions">
+                <button type="button" className="button button-record" disabled aria-describedby="record-note">
+                  Start scribe
+                </button>
+                <button type="button" className="button button-secondary" disabled={busy} onClick={cancel}>
+                  End session
+                </button>
+              </div>
+              <p id="record-note" className="visually-hidden">
+                Recording is not available in this version.
+              </p>
+            </section>
+          )}
 
-      {s.status === 'CONSENT_DECLINED' && (
-        <section className="step" aria-labelledby="declined-heading">
-          <h1 id="declined-heading" className="state-title">
-            Scribe off for this appointment
-          </h1>
-          <p className="state-lead">
-            {first} declined. Nothing will be recorded, and nothing about this appointment will be sent for AI processing.
-          </p>
-          <div className="actions">
-            <button type="button" className="button button-primary" onClick={() => p.onClose(appt.appointmentId)}>
-              Done
-            </button>
-          </div>
-        </section>
+          {s.status === 'CONSENT_DECLINED' && (
+            <section className="step" aria-labelledby="declined-heading">
+              <h1 id="declined-heading" className="state-title">
+                Scribe off for this appointment
+              </h1>
+              <p className="state-lead">
+                {first === 'the patient' ? 'The patient' : first} declined. Nothing will be recorded, and nothing about this appointment will be
+                sent for AI processing.
+              </p>
+              <div className="actions">
+                <button type="button" className="button button-primary" onClick={() => p.onClose(appt.appointmentId)}>
+                  Done
+                </button>
+              </div>
+            </section>
+          )}
+        </>
       )}
     </div>
   );

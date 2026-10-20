@@ -3,7 +3,12 @@
 // NOT YET VERIFIED against a live Base44 app (issue P1-01). Assumptions to confirm when the app exists:
 //   - functions run on Deno and read secrets with Deno.env.get
 //   - createClientFromRequest(req).asServiceRole.entities.<Name> bypasses entity access rules (per SDK 0.8 docs)
-//   - entity filter(query, { limit }) returns { items } (newer SDK) or an array (older); both handled below
+//   - filter(query, { limit, cursor }) returns { items, next_cursor, has_more } and supports $in/$gte (SDK 0.8 types)
+//   - updateMany(query, { $set }) applies atomically to the rows matching the query, so filtering on `version`
+//     gives compare-and-set
+//
+// SAFETY: anything unexpected from the database (an unknown response shape, a malformed session row,
+// more rows than can be read) throws. Nothing is assumed or filled in with defaults.
 //
 // SECURITY: roles and clinic membership come from the StaffProfile entity, which only functions can write.
 // They are never read from the Base44 user record, because users can edit their own custom user fields.
@@ -33,6 +38,7 @@ interface EntityApi {
   filter(query: Record<string, unknown>, options?: Record<string, unknown>): Promise<unknown>;
   create(data: Record<string, unknown>): Promise<Row>;
   update(id: string, data: Record<string, unknown>): Promise<Row>;
+  updateMany(query: Record<string, unknown>, data: Record<string, Record<string, unknown>>): Promise<{ updated?: number } | null>;
 }
 export interface Base44Like {
   auth: { me(): Promise<{ email?: string | null; full_name?: string | null } | null> };
@@ -43,12 +49,47 @@ declare const Deno: { env: { get(name: string): string | undefined } };
 
 const APP_VERSION = '0.1.0';
 
+const UNREADABLE = 'The database returned something AuraNoteTaker could not read. Please tell the practice manager.';
+
 function rows(result: unknown): Row[] {
   if (Array.isArray(result)) return result as Row[];
   if (result && typeof result === 'object' && Array.isArray((result as { items?: unknown }).items)) {
     return (result as { items: Row[] }).items;
   }
-  return [];
+  throw new AppError('INTERNAL', UNREADABLE);
+}
+
+const PAGE = 200;
+const MAX_PAGES = 50;
+
+/** Every row matching the query, across pages. Throws rather than return a list that might be incomplete. */
+async function allRows(entity: EntityApi, query: Record<string, unknown>): Promise<Row[]> {
+  const out: Row[] = [];
+  let cursor: string | null = null;
+  for (let i = 0; i < MAX_PAGES; i += 1) {
+    const page = await entity.filter(query, { limit: PAGE, sort: '-created_date', ...(cursor ? { cursor } : {}) });
+    if (Array.isArray(page)) {
+      // Older SDK shape with no paging information: only trustworthy if it is clearly not full.
+      if (page.length >= PAGE) throw new AppError('INTERNAL', UNREADABLE);
+      return [...out, ...(page as Row[])];
+    }
+    out.push(...rows(page));
+    const p = page as { next_cursor?: string | null; has_more?: boolean };
+    if (!p.has_more || !p.next_cursor) return out;
+    cursor = p.next_cursor;
+  }
+  throw new AppError('INTERNAL', UNREADABLE);
+}
+
+/** Drops null and undefined object fields (schemas declare plain types; absent means null). */
+function compact<T>(value: T): T {
+  if (Array.isArray(value)) return value.map((v) => compact(v)) as T;
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) if (v !== null && v !== undefined) out[k] = compact(v);
+    return out as T;
+  }
+  return value;
 }
 
 function secret(name: string): string {
@@ -106,14 +147,22 @@ export async function resolveContext(base44: Base44Like, clinic: ClinicConfig, h
 // ---------------------------------------------------------------------------
 // Repositories on Base44 entities (service role; entity rules deny direct client access)
 
+const SESSION_STATUSES = new Set([
+  'PATIENT_CONFIRMED', 'CONSENT_DECLINED', 'READY', 'RECORDING', 'PAUSED', 'STOPPED', 'GENERATING', 'IN_REVIEW', 'APPROVED', 'DISCARDED', 'CANCELLED',
+]);
+const ACTIVE_STATUSES = ['PATIENT_CONFIRMED', 'READY', 'RECORDING', 'PAUSED', 'STOPPED', 'GENERATING', 'IN_REVIEW'];
+const METHODS = new Set(['CONFIRMED_SUGGESTION', 'CHOSE_ALTERNATIVE', 'RESOLVED_AMBIGUITY', 'CHOSE_FROM_DIARY']);
+const CONSENT = new Set(['PENDING', 'GIVEN', 'DECLINED']);
+
 function sessionToRow(s: ScribeSession): Record<string, unknown> {
-  return {
+  return compact({
     session_id: s.sessionId,
     clinic_id: s.clinicId,
     clinician_id: s.clinicianId,
     surgery_id: s.surgeryId,
     status: s.status,
     dentally_patient_id: s.patient.dentallyPatientId,
+    dentally_appointment_id: s.patient.appointment.appointmentId,
     appointment: {
       dentally_appointment_id: s.patient.appointment.appointmentId,
       practitioner_id: s.patient.appointment.practitionerId,
@@ -146,13 +195,22 @@ function sessionToRow(s: ScribeSession): Record<string, unknown> {
     recording_stopped_at: msToIso(s.recordingStoppedAtMs),
     client_device_id: s.clientDeviceId,
     version: s.version,
-  };
+  });
 }
 
 function rowToSession(r: Row): ScribeSession {
   const a = (r.appointment ?? {}) as Record<string, unknown>;
   const c = (r.confirmation ?? {}) as Record<string, unknown>;
   const k = (r.consent ?? {}) as Record<string, unknown>;
+  // A malformed row is an error, never an active session for an unknown patient.
+  const valid =
+    str(r.session_id) && str(r.clinic_id) && str(r.clinician_id) && str(r.dentally_patient_id) &&
+    typeof r.status === 'string' && SESSION_STATUSES.has(r.status) &&
+    str(a.dentally_appointment_id) && str(a.practitioner_id) && isoToMs(a.start_time) !== null && isoToMs(a.finish_time) !== null &&
+    typeof c.method === 'string' && METHODS.has(c.method) && str(c.confirmed_by_email) && isoToMs(c.confirmed_at) !== null &&
+    typeof k.status === 'string' && CONSENT.has(k.status) &&
+    typeof r.version === 'number' && Number.isSafeInteger(r.version) && r.version >= 1;
+  if (!valid) throw new AppError('INTERNAL', UNREADABLE);
   return {
     sessionId: String(r.session_id),
     clinicId: String(r.clinic_id),
@@ -212,43 +270,47 @@ export class Base44SessionRepository implements SessionRepository {
     return this.base44.asServiceRole.entities.ScribeSession!;
   }
 
-  private async row(clinicId: string, sessionId: string): Promise<Row | null> {
-    return rows(await this.entity.filter({ clinic_id: clinicId, session_id: sessionId }, { limit: 1 }))[0] ?? null;
-  }
-
   async create(session: ScribeSession): Promise<void> {
     await this.entity.create(sessionToRow(session));
   }
 
   async get(clinicId: string, sessionId: string): Promise<ScribeSession | null> {
-    const r = await this.row(clinicId, sessionId);
-    return r ? rowToSession(r) : null;
+    const found = await allRows(this.entity, { clinic_id: clinicId, session_id: sessionId });
+    if (found.length > 1) throw new AppError('INTERNAL', UNREADABLE); // session IDs are unique
+    return found[0] ? rowToSession(found[0]) : null;
   }
 
-  // Base44 has no conditional update, so this is read-check-write. The window is small and the
-  // handler has already checked the version; Phase 7 revisits this if Base44 adds compare-and-set.
+  /** Compare-and-set: only the row still at `expectedVersion` is updated. */
   async update(session: ScribeSession, expectedVersion: number): Promise<void> {
-    const r = await this.row(session.clinicId, session.sessionId);
-    if (!r?.id || r.version !== expectedVersion) throw new VersionConflictError();
-    await this.entity.update(r.id, sessionToRow(session));
+    const result = await this.entity.updateMany(
+      { clinic_id: session.clinicId, session_id: session.sessionId, version: expectedVersion },
+      { $set: sessionToRow(session) },
+    );
+    if (!result || result.updated !== 1) throw new VersionConflictError();
   }
 
   async findActive(
     clinicId: string,
     filter: { surgeryId?: string | null; clinicianId?: string | null; patientId?: string | null },
   ): Promise<ScribeSession[]> {
+    const open = { clinic_id: clinicId, status: { $in: ACTIVE_STATUSES } };
     const queries: Record<string, unknown>[] = [];
-    if (filter.surgeryId) queries.push({ clinic_id: clinicId, surgery_id: filter.surgeryId });
-    if (filter.clinicianId) queries.push({ clinic_id: clinicId, clinician_id: filter.clinicianId });
-    if (filter.patientId) queries.push({ clinic_id: clinicId, dentally_patient_id: filter.patientId });
+    if (filter.surgeryId) queries.push({ ...open, surgery_id: filter.surgeryId });
+    if (filter.clinicianId) queries.push({ ...open, clinician_id: filter.clinicianId });
+    if (filter.patientId) queries.push({ ...open, dentally_patient_id: filter.patientId });
     const found = new Map<string, ScribeSession>();
     for (const q of queries) {
-      for (const r of rows(await this.entity.filter(q, { limit: 50, sort: '-created_date' }))) {
+      for (const r of await allRows(this.entity, q)) {
         const s = rowToSession(r);
         if (!isTerminal(s.status)) found.set(s.sessionId, s);
       }
     }
     return [...found.values()];
+  }
+
+  async findByAppointments(clinicId: string, appointmentIds: readonly string[]): Promise<ScribeSession[]> {
+    if (appointmentIds.length === 0) return [];
+    return (await allRows(this.entity, { clinic_id: clinicId, dentally_appointment_id: { $in: [...appointmentIds] } })).map(rowToSession);
   }
 }
 
@@ -256,7 +318,7 @@ export class Base44AuditSink implements AuditSink {
   constructor(private readonly base44: Base44Like) {}
 
   async append(e: AuditEvent): Promise<void> {
-    await this.base44.asServiceRole.entities.AuditEvent!.create({
+    await this.base44.asServiceRole.entities.AuditEvent!.create(compact({
       clinic_id: e.clinicId,
       occurred_at: new Date(e.occurredAtMs).toISOString(),
       actor_email: e.actorEmail,
@@ -267,7 +329,18 @@ export class Base44AuditSink implements AuditSink {
       dentally_appointment_id: e.dentallyAppointmentId,
       details: e.details,
       client: { device_id: e.client.deviceId, app_version: e.client.appVersion },
-    });
+      dedupe_key: e.dedupeKey,
+    }));
+  }
+
+  async hasRecent(clinicId: string, actorEmail: string, dedupeKey: string, sinceMs: number): Promise<boolean> {
+    const found = rows(
+      await this.base44.asServiceRole.entities.AuditEvent!.filter(
+        { clinic_id: clinicId, actor_email: actorEmail, dedupe_key: dedupeKey, occurred_at: { $gte: new Date(sinceMs).toISOString() } },
+        { limit: 1 },
+      ),
+    );
+    return found.length > 0;
   }
 }
 
@@ -275,19 +348,22 @@ export class Base44ClinicDirectory implements ClinicDirectory {
   constructor(private readonly base44: Base44Like) {}
 
   async listClinicians(clinicId: string): Promise<ClinicianEntry[]> {
-    return rows(await this.base44.asServiceRole.entities.Clinician!.filter({ clinic_id: clinicId, active: true }, { limit: 200 })).map((r) => ({
-      practitionerId: String(r.dentally_practitioner_id),
-      displayName: String(r.display_name),
-      clinicianType: (str(r.clinician_type) ?? 'OTHER') as ClinicianEntry['clinicianType'],
-    }));
+    return (await allRows(this.base44.asServiceRole.entities.Clinician!, { clinic_id: clinicId, active: true })).map((r) => {
+      const practitionerId = str(r.dentally_practitioner_id);
+      const displayName = str(r.display_name);
+      // A clinician without an ID or name would appear as "undefined" on the setup screen: refuse instead.
+      if (!practitionerId || !displayName) throw new AppError('INTERNAL', UNREADABLE);
+      return { practitionerId, displayName, clinicianType: (str(r.clinician_type) ?? 'OTHER') as ClinicianEntry['clinicianType'] };
+    });
   }
 
   async listSurgeries(clinicId: string): Promise<SurgeryEntry[]> {
-    return rows(await this.base44.asServiceRole.entities.Surgery!.filter({ clinic_id: clinicId, active: true }, { limit: 100 })).map((r) => ({
-      surgeryId: String(r.id),
-      name: String(r.name),
-      roomId: str(r.dentally_room_id),
-    }));
+    return (await allRows(this.base44.asServiceRole.entities.Surgery!, { clinic_id: clinicId, active: true })).map((r) => {
+      const surgeryId = str(r.id);
+      const name = str(r.name);
+      if (!surgeryId || !name) throw new AppError('INTERNAL', UNREADABLE);
+      return { surgeryId, name, roomId: str(r.dentally_room_id) };
+    });
   }
 }
 

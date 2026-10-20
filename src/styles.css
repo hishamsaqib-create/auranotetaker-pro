@@ -634,6 +634,34 @@ input {
   background: var(--gold);
 }
 
+/* Why confirm is not available yet: waiting for Dentally (muted) or a problem to sort out first (bad). */
+.confirm-check {
+  margin: 12px 0 0;
+  font-size: 16px;
+}
+
+.confirm-check-muted {
+  color: var(--ink-3);
+}
+
+.confirm-check-bad {
+  color: var(--bad);
+  font-weight: 600;
+}
+
+.patient-facts dd.fact-bad {
+  color: var(--bad);
+}
+
+.warning-list {
+  margin: 4px 0 0;
+  padding-left: 20px;
+}
+
+.warning-list li + li {
+  margin-top: 4px;
+}
+
 .candidate-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
@@ -781,6 +809,12 @@ input {
   font-weight: 750;
   letter-spacing: -0.015em;
   margin: 8px 0 16px;
+}
+
+.locked-note {
+  margin: -8px 0 14px;
+  color: #f3d9a4;
+  font-size: 16px;
 }
 
 .locked-facts {
@@ -1047,8 +1081,36 @@ input {
     font-size: 24px;
   }
 
+  /* On phones the hazard tape runs along the top edge, so the banner keeps normal side gutters. */
+  .demo-banner {
+    position: relative;
+    padding-top: 18px;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+  }
+
   .demo-tape {
-    width: 20px;
+    position: absolute;
+    inset: 0 0 auto 0;
+    width: auto;
+    height: 8px;
+    min-height: 0;
+    margin: 0;
+  }
+
+  .demo-text {
+    flex-basis: 100%;
+  }
+
+  /* A long scenario name must not widen the page. */
+  .demo-control {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+
+  .demo-control select {
+    flex: 1 1 auto;
+    min-width: 0;
+    max-width: 100%;
   }
 
   .demo-audit {

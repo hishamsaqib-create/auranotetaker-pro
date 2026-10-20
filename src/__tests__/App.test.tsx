@@ -136,6 +136,114 @@ describe('AuraNoteTaker main clinical screen (demo mode)', () => {
     expect(within(diary).queryByRole('button', { name: /No patient/ })).not.toBeInTheDocument();
   });
 
+  it('caps confidence and says which appointment may still be running when the previous one was never completed', async () => {
+    const { user } = setup('previous-open');
+    await signIn(user);
+    expect(await screen.findByRole('heading', { name: 'Likely current patient' })).toBeInTheDocument();
+    expect(screen.getByText('Medium confidence: check the reasons')).toBeInTheDocument();
+    expect(
+      screen.getByText('The 09:45–10:30 appointment is not marked completed in Dentally and may still be running. Check who is in the chair.'),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('article', { name: 'Patient Oliver Bennett' })).toBeInTheDocument();
+  });
+
+  it('shows the new patient when Dentally re-books the appointment, and holds confirm until their details are checked', async () => {
+    const { user, backend } = setup();
+    await signIn(user);
+    const oliver = await screen.findByRole('button', { name: 'Confirm Oliver Bennett' });
+    await waitFor(() => expect(oliver).toBeEnabled(), { timeout: 3000 });
+
+    backend.demo!.rebook('DEMO-A04', 'DEMO-P1009');
+    await user.click(screen.getByRole('button', { name: /^Updated/ }));
+
+    const priya = await screen.findByRole('button', { name: 'Confirm Priya Raman' });
+    expect(priya).toBeDisabled();
+    expect(screen.queryByRole('article', { name: 'Patient Oliver Bennett' })).not.toBeInTheDocument();
+    expect(await within(screen.getByRole('article', { name: 'Patient Priya Raman' })).findByText('27 Feb 1997')).toBeInTheDocument();
+    await waitFor(() => expect(priya).toBeEnabled(), { timeout: 3000 });
+    await user.click(priya);
+    const locked = await screen.findByLabelText('Patient locked to this session');
+    expect(locked).toHaveTextContent('Priya Raman');
+    expect(locked).toHaveTextContent('DEMO-P1009');
+  });
+
+  it('refuses to lock a patient Dentally has re-booked since the diary was read, and shows the new booking', async () => {
+    const { user, backend } = setup();
+    await signIn(user);
+    const oliver = await screen.findByRole('button', { name: 'Confirm Oliver Bennett' });
+    await waitFor(() => expect(oliver).toBeEnabled(), { timeout: 3000 });
+
+    backend.demo!.rebook('DEMO-A04', 'DEMO-P1009');
+    await user.click(oliver);
+
+    expect(await screen.findByText(/In Dentally this appointment is no longer booked for that patient/)).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Confirm Priya Raman' })).toBeInTheDocument();
+    expect(screen.queryByLabelText('Patient locked to this session')).not.toBeInTheDocument();
+    expect(backend.demo!.auditEvents().some((e) => e.action === 'PATIENT_CONFIRMED')).toBe(false);
+  });
+
+  it('asks before confirming again a patient who declined the scribe earlier in the appointment', async () => {
+    const { user, backend } = setup();
+    await signIn(user);
+    const confirm = await screen.findByRole('button', { name: 'Confirm Oliver Bennett' });
+    await waitFor(() => expect(confirm).toBeEnabled(), { timeout: 3000 });
+    await user.click(confirm);
+    await user.click(await screen.findByRole('button', { name: 'No, Oliver declined' }));
+    await user.click(await screen.findByRole('button', { name: 'Done' }));
+
+    const diary = await screen.findByRole('list', { name: 'Appointments today with Dr Sarah Lin' });
+    await user.click(within(diary).getByRole('button', { name: /Oliver Bennett/ }));
+    const again = screen.getByRole('button', { name: 'Confirm Oliver Bennett' });
+    await waitFor(() => expect(again).toBeEnabled(), { timeout: 3000 });
+    await user.click(again);
+
+    expect(await screen.findByText(/declined the AI scribe for this appointment earlier/)).toBeInTheDocument();
+    expect(screen.queryByLabelText('Patient locked to this session')).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'The patient has changed their mind' }));
+    expect(await screen.findByLabelText('Patient locked to this session')).toHaveTextContent('Oliver Bennett');
+    const confirmations = backend.demo!.auditEvents().filter((e) => e.action === 'PATIENT_CONFIRMED');
+    expect(confirmations.at(-1)?.details.acknowledgedPreviousDecline).toBe(true);
+  });
+
+  it('offers only Cancel for a session that is open in another surgery', async () => {
+    localStorage.setItem('auranotetaker.device-setup.v1', JSON.stringify({ practitionerId: 'DEMO-PR1', surgeryId: 'DEMO-SURGERY-1' }));
+    const backend = createDemoBackend({ clock, latencyMs: 0 });
+    // Dr Lin's session was started in Surgery 2 earlier; this computer is in Surgery 1.
+    backend.demo!.signInAs('sarah.lin@demo.invalid');
+    await backend.confirmPatient({
+      appointmentId: 'DEMO-A04',
+      patientId: 'DEMO-P1001',
+      practitionerId: 'DEMO-PR1',
+      surgeryId: 'DEMO-SURGERY-2',
+      predictedAppointmentId: null,
+      method: 'CHOSE_FROM_DIARY',
+    });
+    await backend.signOut();
+    const user = userEvent.setup();
+    render(<App backend={backend} clock={clock} />);
+    await signIn(user);
+
+    expect(await screen.findByRole('heading', { name: 'This session is open in Surgery 2' })).toBeInTheDocument();
+    expect(await screen.findByLabelText('Patient locked to this session')).toHaveTextContent('Oliver Bennett');
+    expect(screen.queryByRole('button', { name: /agreed/ })).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Cancel this session' }));
+    expect(await screen.findByRole('heading', { name: 'Likely current patient' })).toBeInTheDocument();
+  });
+
+  it("uses the server's time when this computer's clock is wrong, and says so", async () => {
+    localStorage.setItem('auranotetaker.device-setup.v1', JSON.stringify({ practitionerId: 'DEMO-PR1', surgeryId: 'DEMO-SURGERY-1' }));
+    const backend = createDemoBackend({ clock, latencyMs: 0 });
+    const user = userEvent.setup();
+    // 40 minutes fast: by this computer's clock Oliver's appointment is over and the next one has started.
+    render(<App backend={backend} clock={() => NOW + 40 * 60_000} />);
+    await signIn(user);
+
+    expect(await screen.findByText("This computer's clock is 40 minutes fast")).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Likely current patient' })).toBeInTheDocument();
+    expect(screen.getByRole('article', { name: 'Patient Oliver Bennett' })).toBeInTheDocument();
+    expect(screen.getByLabelText('Time now 10:40')).toBeInTheDocument();
+  });
+
   it('blocks new sessions while Dentally is unavailable, and says why', async () => {
     const { user } = setup('dentally-offline');
     await signIn(user);

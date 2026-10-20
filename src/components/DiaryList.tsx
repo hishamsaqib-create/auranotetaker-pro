@@ -1,6 +1,7 @@
 import type { Ref } from 'react';
 import type { DiaryAppointment } from '../../lib/core/appointments.ts';
 import { formatClock, formatTimeRange } from '../../lib/core/time.ts';
+import type { ScribeOutcome } from '../../lib/server/handlers.ts';
 import { RefreshIcon } from './icons.tsx';
 
 export interface DiaryListProps {
@@ -9,7 +10,8 @@ export interface DiaryListProps {
   timeZone: string;
   roomNames: Readonly<Record<string, string>>;
   currentIds: ReadonlySet<string>;
-  finishedIds: ReadonlySet<string>;
+  /** Appointments already finished with in AuraNoteTaker today. */
+  outcomes: Readonly<Record<string, ScribeOutcome>>;
   selectedId: string | null;
   onSelect: (a: DiaryAppointment) => void;
   loading: boolean;
@@ -48,7 +50,7 @@ export function DiaryList(p: DiaryListProps) {
         <ol className="diary-list" ref={p.listRef} tabIndex={-1} aria-label={`Appointments today with ${p.clinicianName}`}>
           {p.appointments.map((a) => {
             const isCurrent = p.currentIds.has(a.appointmentId);
-            const isFinished = p.finishedIds.has(a.appointmentId);
+            const outcome = p.outcomes[a.appointmentId];
             const isSelected = p.selectedId === a.appointmentId;
             const time = formatTimeRange(a.startMs, a.finishMs, p.timeZone);
             const body = (
@@ -60,7 +62,8 @@ export function DiaryList(p: DiaryListProps) {
                 </span>
                 <span className="diary-tags">
                   {isCurrent && <span className="tag tag-now">Now</span>}
-                  {isFinished && <span className="tag">Scribe done</span>}
+                  {outcome === 'DECLINED' && <span className="tag">Scribe declined</span>}
+                  {outcome === 'APPROVED' && <span className="tag">Note approved</span>}
                   <span className={`tag tag-state state-${a.state.replace(/\s+/g, '-').toLowerCase()}`}>{a.state}</span>
                 </span>
               </>

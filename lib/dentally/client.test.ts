@@ -85,6 +85,21 @@ describe('DentallyClient', () => {
     expect(q.get('per_page')).toBe('100');
   });
 
+  it('follows total_pages even when a page comes back short', async () => {
+    const { impl, calls } = fakeFetch((c) => {
+      const p = Number(c.url.searchParams.get('page'));
+      return json({ appointments: p === 1 ? [{ id: 1 }, { id: 2 }] : [{ id: 3 }], meta: { total_pages: 2 } });
+    });
+    const items = await client(impl).listAppointments({ on: '2026-10-20' });
+    expect(items).toHaveLength(3);
+    expect(calls).toHaveLength(2);
+  });
+
+  it('treats an empty page before the reported last page as a bad response', async () => {
+    const { impl } = fakeFetch((c) => json({ appointments: Number(c.url.searchParams.get('page')) === 1 ? [{ id: 1 }] : [], meta: { total_pages: 3 } }));
+    await expect(client(impl).listAppointments({ on: '2026-10-20' })).rejects.toMatchObject({ kind: 'BAD_RESPONSE' });
+  });
+
   it('refuses to return a silently truncated list when pagination never ends', async () => {
     const { impl } = fakeFetch(() => json({ appointments: Array.from({ length: 100 }, (_, i) => ({ id: i })) }));
     await expect(client(impl).listAppointments({ on: '2026-10-20' })).rejects.toMatchObject({ kind: 'BAD_RESPONSE' });
