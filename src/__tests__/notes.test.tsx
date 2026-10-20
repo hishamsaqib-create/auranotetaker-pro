@@ -73,3 +73,62 @@ describe('note writer', () => {
     expect(own.map((t) => t.title)).toEqual(['Composite restoration']);
   });
 });
+
+describe('templates import', () => {
+  it('splits pasted templates on ## headings', async () => {
+    const { parseTemplateImport } = await import('../components/TemplateManager.tsx');
+    expect(parseTemplateImport('## Exam\nC/O: [Complaint]\n### Findings\nNAD\n\n## Filling\n[Tooth]\n')).toEqual([
+      { title: 'Exam', body: 'C/O: [Complaint]\n### Findings\nNAD' },
+      { title: 'Filling', body: '[Tooth]' },
+    ]);
+    expect(parseTemplateImport('no headings here')).toEqual([]);
+  });
+});
+
+describe('generate note in the writer', () => {
+  it('replaces the note with an AI draft that must be ticked as checked before copying, and can be undone', async () => {
+    const backend = createDemoBackend({ clock: () => NOW, latencyMs: 0 });
+    backend.demo!.signInAs('sarah.lin@demo.invalid');
+    const copies: string[] = [];
+    const sent: { templateId: string | null; notes: string }[] = [];
+    const user = userEvent.setup();
+    render(
+      <NoteWriter
+        backend={backend}
+        patientLabel="Oliver Bennett, born 12 Mar 1986"
+        sessionId={null}
+        canManageTemplates={false}
+        copyText={async (t) => void copies.push(t)}
+        generate={async (templateId, notes) => {
+          sent.push({ templateId, notes });
+          return { draft: 'Extraction LR8. [Consent]', provider: 'DEMO', model: 'demo' };
+        }}
+      />,
+    );
+    await user.type(screen.getByLabelText('Note'), 'LR8 out, anxious');
+    await user.click(screen.getByRole('button', { name: 'Generate note' }));
+    expect(sent).toEqual([{ templateId: null, notes: 'LR8 out, anxious' }]);
+    const note = screen.getByLabelText('Note') as HTMLTextAreaElement;
+    expect(note.value).toBe('Extraction LR8. [Consent]');
+    expect(screen.getByText('AI draft: check every line against what happened before copying')).toBeInTheDocument();
+    const copy = screen.getByRole('button', { name: 'Copy for Dentally' });
+    expect(copy).toBeDisabled();
+    await user.click(screen.getByRole('checkbox', { name: 'I have checked every line of this draft' }));
+    await user.click(copy);
+    expect(copies).toEqual(['Extraction LR8. [Consent]']);
+    expect(backend.demo!.auditEvents().at(-1)).toMatchObject({ action: 'NOTE_COPIED', details: { aiDraft: true, unfilledCount: 1 } });
+    // A second draft, undone, brings back the first draft still marked as AI, still needing the tick.
+    await user.click(screen.getByRole('button', { name: 'Generate note' }));
+    await user.click(screen.getByRole('button', { name: 'Undo the draft' }));
+    expect(note.value).toBe('Extraction LR8. [Consent]');
+    expect(screen.getByRole('button', { name: 'Copy for Dentally' })).toBeDisabled();
+    expect(screen.getByRole('checkbox', { name: 'I have checked every line of this draft' })).not.toBeChecked();
+  });
+
+  it('explains when AI drafting is not allowed', () => {
+    const backend = createDemoBackend({ clock: () => NOW, latencyMs: 0 });
+    render(<NoteWriter backend={backend} patientLabel={null} sessionId={null} canManageTemplates={false} generateUnavailable="The patient did not agree to the AI scribe." />);
+    expect(screen.queryByRole('button', { name: 'Generate note' })).not.toBeInTheDocument();
+    expect(screen.getByText('The patient did not agree to the AI scribe.')).toBeInTheDocument();
+  });
+});

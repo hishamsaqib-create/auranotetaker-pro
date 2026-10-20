@@ -39,6 +39,7 @@ import type {
   ClinicianEntry,
   ClinicianRecord,
   HandlerDeps,
+  NoteGenerator,
   ScribeContentStore,
   SessionRepository,
   SpeechToken,
@@ -50,7 +51,7 @@ import type {
   SurgeryEntry,
   SurgeryRecord,
 } from '../lib/server/ports.ts';
-import { APP_ROLES, SpeechServiceError, VersionConflictError } from '../lib/server/ports.ts';
+import { APP_ROLES, NoteGeneratorError, SpeechServiceError, VersionConflictError } from '../lib/server/ports.ts';
 
 // Minimal structural types so this file does not depend on SDK type definitions.
 type Row = Record<string, unknown> & { id?: string };
@@ -63,7 +64,11 @@ interface EntityApi {
   deleteMany(query: Record<string, unknown>): Promise<unknown>;
 }
 export interface Base44Like {
-  auth: { me(): Promise<{ email?: string | null; full_name?: string | null; role?: string | null } | null> };
+  auth: {
+    me(): Promise<{ email?: string | null; full_name?: string | null; role?: string | null } | null>;
+    /** Invites a user to the app, as the caller (who must be allowed to invite). */
+    inviteUser?(email: string, role: string): Promise<unknown>;
+  };
   asServiceRole: { entities: Record<string, EntityApi> };
 }
 
@@ -163,6 +168,8 @@ export async function resolveContext(base44: Base44Like, clinic: ClinicConfig, h
     clinicId: clinic.clinicId,
     roles,
     clinicianId: str(profile.clinician_id),
+    defaultSurgeryId: str(profile.default_surgery_id),
+    worksWithClinicianId: str(profile.works_with_clinician_id),
     // A random per-browser ID. Anything else in the header is ignored rather than stored.
     deviceId: ((v) => (v && DEVICE_ID.test(v) ? v : null))(headers.get('x-device-id')),
     appVersion: APP_VERSION,
@@ -418,6 +425,8 @@ function rowToStaff(r: Row): StaffProfileRecord {
     displayName,
     roles: r.app_roles.filter((x): x is AppRole => (APP_ROLES as readonly unknown[]).includes(x)),
     clinicianId: str(r.clinician_id),
+    defaultSurgeryId: str(r.default_surgery_id),
+    worksWithClinicianId: str(r.works_with_clinician_id),
     active: r.active === true,
   };
 }
@@ -515,12 +524,21 @@ export class Base44ClinicDirectory implements ClinicDirectory, ClinicAdminStore 
       display_name: record.displayName,
       app_roles: record.roles,
       clinician_id: record.clinicianId,
+      default_surgery_id: record.defaultSurgeryId,
+      works_with_clinician_id: record.worksWithClinicianId,
       active: record.active,
     });
     const existing = await allRows(this.entity('StaffProfile'), { clinic_id: clinicId, user_email: record.email });
     if (existing.length > 1) throw new AppError('INTERNAL', UNREADABLE);
     // A cleared clinician link must be removed, not left behind by an update that omits it.
-    if (existing[0]?.id) await this.entity('StaffProfile').update(existing[0].id, { ...data, clinician_id: record.clinicianId ?? '' });
+    if (existing[0]?.id) {
+      await this.entity('StaffProfile').update(existing[0].id, {
+        ...data,
+        clinician_id: record.clinicianId ?? '',
+        default_surgery_id: record.defaultSurgeryId ?? '',
+        works_with_clinician_id: record.worksWithClinicianId ?? '',
+      });
+    }
     else await this.entity('StaffProfile').create(data);
   }
 }
@@ -747,6 +765,53 @@ export class SpeechmaticsTokenIssuer implements SpeechTokenIssuer {
 }
 
 // ---------------------------------------------------------------------------
+// Note drafting: Claude through Anthropic's API (decision D3, 20 Oct 2026).
+//
+// PRIVACY: the request carries the session's transcript and notes but no name or date of birth from the patient
+// record (names spoken in the surgery can still appear in the transcript).
+// Anthropic does not train on API data by default; the DPIA records the processing. Nothing is logged here.
+
+const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
+const DEFAULT_ANTHROPIC_MODEL = 'claude-sonnet-5-5';
+const MODEL_NAME = /^[a-z0-9][a-z0-9.-]{2,63}$/;
+
+export class AnthropicNoteGenerator implements NoteGenerator {
+  readonly provider = 'ANTHROPIC' as const;
+  constructor(private readonly readSecret: SecretReader, private readonly fetchImpl: typeof fetch = fetch) {}
+
+  async generate(input: { system: string; prompt: string; maxTokens: number }): Promise<{ text: string; model: string }> {
+    const apiKey = this.readSecret('ANTHROPIC_API_KEY');
+    if (!apiKey) throw new NoteGeneratorError('NOT_CONFIGURED');
+    const configured = this.readSecret('ANTHROPIC_MODEL')?.trim();
+    const model = configured && MODEL_NAME.test(configured) ? configured : DEFAULT_ANTHROPIC_MODEL;
+    let res: Response;
+    try {
+      res = await this.fetchImpl(ANTHROPIC_URL, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+        body: JSON.stringify({ model, max_tokens: input.maxTokens, system: input.system, messages: [{ role: 'user', content: input.prompt }] }),
+        // Inside the browser's wait (75 s) and Base44's function time limit.
+        signal: AbortSignal.timeout(55_000),
+      });
+    } catch {
+      throw new NoteGeneratorError('UNAVAILABLE');
+    }
+    if (res.status === 401 || res.status === 403) throw new NoteGeneratorError('AUTH');
+    if (!res.ok) throw new NoteGeneratorError('UNAVAILABLE');
+    const body = (await res.json().catch(() => null)) as { content?: { type?: string; text?: string }[]; stop_reason?: string; model?: string } | null;
+    if (!body || !Array.isArray(body.content)) throw new NoteGeneratorError('UNAVAILABLE');
+    if (body.stop_reason === 'refusal') throw new NoteGeneratorError('REFUSED');
+    const text = body.content
+      .filter((c) => c.type === 'text' && typeof c.text === 'string')
+      .map((c) => c.text)
+      .join('');
+    // A draft cut off at the length limit is not a finished note: say so rather than hand back half of it.
+    if (body.stop_reason === 'max_tokens') throw new NoteGeneratorError('INCOMPLETE');
+    return { text, model: typeof body.model === 'string' ? body.model : model };
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Wiring
 
 export async function buildDeps(base44: Base44Like, clinic: ClinicConfig, readSecret: SecretReader): Promise<HandlerDeps> {
@@ -771,6 +836,13 @@ export async function buildDeps(base44: Base44Like, clinic: ClinicConfig, readSe
       return cipher;
     },
     speech: new SpeechmaticsTokenIssuer(readSecret),
+    invites: {
+      async invite(email: string) {
+        if (!base44.auth.inviteUser) throw new Error('Invitations are not available');
+        await base44.auth.inviteUser(email, 'user');
+      },
+    },
+    notes: new AnthropicNoteGenerator(readSecret),
   };
 }
 

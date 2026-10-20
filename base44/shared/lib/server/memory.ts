@@ -16,6 +16,8 @@ import type {
   SessionRepository,
   SpeechToken,
   SpeechTokenIssuer,
+  StaffInviter,
+  NoteGenerator,
   StoredNurseNote,
   StoredSegment,
   StaffProfileRecord,
@@ -250,5 +252,34 @@ export class DemoSpeechTokenIssuer implements SpeechTokenIssuer {
   constructor(private readonly clock: () => number) {}
   async issue(): Promise<SpeechToken> {
     return { provider: 'DEMO', url: null, expiresAtMs: this.clock() + 60_000 };
+  }
+}
+
+/** Records invitations instead of sending them (demo mode and tests). */
+export class RecordingInviter implements StaffInviter {
+  readonly sent: string[] = [];
+  async invite(email: string): Promise<void> {
+    this.sent.push(email);
+  }
+}
+
+/**
+ * Demo mode: no AI. Returns a clearly labelled stand-in built from the sources, so the screens can be tried.
+ * It copies the template with its blanks untouched, then lists what it was given.
+ */
+export class DemoNoteGenerator implements NoteGenerator {
+  readonly provider = 'DEMO' as const;
+  async generate(input: { system: string; prompt: string; maxTokens: number }): Promise<{ text: string; model: string }> {
+    const template = /<template>\n([\s\S]*?)\n<\/template>/.exec(input.prompt)?.[1] ?? '';
+    const transcript = /<transcript>\n([\s\S]*?)\n<\/transcript>/.exec(input.prompt)?.[1] ?? '';
+    const lines = transcript.split('\n').filter((l) => l && l !== '(none)').length;
+    return {
+      text: [
+        'DEMO DRAFT (no AI in demo mode): check and complete before use.',
+        template || 'Complaint: [check: complaint]\nExamination: [check: findings]\nTreatment: [check: treatment]',
+        `[check: drafted from ${lines} transcript line${lines === 1 ? '' : 's'}]`,
+      ].join('\n\n'),
+      model: 'demo',
+    };
   }
 }

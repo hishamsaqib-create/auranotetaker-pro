@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import type { ClinicSetupResponse } from '../../lib/server/handlers.ts';
 import type { AppBackend, StaffProfileInput } from '../backend/types.ts';
 import { Notice } from './Notice.tsx';
+import { TemplateManager } from './TemplateManager.tsx';
 
 type ClinicianType = 'DENTIST' | 'THERAPIST' | 'HYGIENIST' | 'OTHER';
 
@@ -15,7 +16,26 @@ const ROLE_LABELS: Record<string, string> = {
   AUDITOR: 'Auditor',
 };
 
-const emptyProfile: StaffProfileInput = { email: '', displayName: '', roles: [], clinicianId: null, active: true };
+const emptyProfile: StaffProfileInput = {
+  email: '',
+  displayName: '',
+  roles: ['DENTIST'],
+  clinicianId: null,
+  worksWithClinicianId: null,
+  defaultSurgeryId: null,
+  active: true,
+  invite: true,
+};
+
+const CLINICAL = ['DENTIST', 'THERAPIST', 'HYGIENIST', 'NURSE', 'AUDITOR'];
+const PRIMARY_ROLES: [string, string][] = [
+  ['DENTIST', 'Dentist'],
+  ['THERAPIST', 'Therapist'],
+  ['HYGIENIST', 'Hygienist'],
+  ['NURSE', 'Nurse'],
+  ['AUDITOR', 'Auditor (read only)'],
+  ['NONE', 'Practice manager only'],
+];
 
 /**
  * Practice manager's setup: which Dentally clinicians and surgeries AuraNoteTaker uses, and who can sign in
@@ -97,6 +117,30 @@ export function AdminScreen({
   const isHidden = (p: { practitionerId: string; active: boolean }) => !onIds.has(p.practitionerId) && (!p.active || offIds.has(p.practitionerId));
   const configuredRooms = new Set(setup.surgeries.map((s) => s.roomId));
   const activeClinicians = setup.clinicians.filter((c) => c.active);
+  const isExisting = setup.staff.some((x) => x.email === profile.email.trim().toLowerCase());
+  const primaryRole = profile.roles.find((r) => CLINICAL.includes(r)) ?? 'NONE';
+  const setPrimaryRole = (role: string) => {
+    const others = profile.roles.filter((r) => !CLINICAL.includes(r));
+    const roles = role === 'NONE' ? (others.length ? others : ['CLINIC_ADMIN']) : [role, ...others];
+    // A nurse has no diary of their own: the chosen dentist becomes the one they work with, and back.
+    const linked = profile.clinicianId ?? profile.worksWithClinicianId ?? null;
+    const seesPatients = ['DENTIST', 'THERAPIST', 'HYGIENIST'].includes(role);
+    setProfile({ ...profile, roles, clinicianId: seesPatients ? linked : null, worksWithClinicianId: role === 'NURSE' ? linked : null });
+  };
+  async function saveProfile() {
+    const name = profile.displayName.trim();
+    const wantedInvite = profile.invite === true;
+    let invite: 'SENT' | 'FAILED' | null = null;
+    await save(name, async () => {
+      const r = await backend.saveStaffProfile(profile);
+      invite = r.invite;
+      return r;
+    }, () => setProfile(emptyProfile));
+    if (wantedInvite && invite === 'SENT') setSaved(`${name} saved and invited.`);
+    if (wantedInvite && invite === 'FAILED') {
+      setError(`${name} was saved, but the invitation could not be sent. Invite them from the AuraNoteTaker app's Users page in Base44, using the same email.`);
+    }
+  }
 
   return (
     <main className="setup admin">
@@ -122,7 +166,7 @@ export function AdminScreen({
         </Notice>
       )}
       {error && <Notice tone="bad" title={error} />}
-      {saved && <Notice tone="info" title={`${saved} saved.`} />}
+      {saved && <Notice tone="info" title={saved.endsWith('.') ? saved : `${saved} saved.`} />}
       {setup.dentallyError && (
         <Notice tone="warn" title="Dentally is not responding">
           Clinicians and surgeries come from Dentally, so they cannot be changed until it is back. You can still manage staff.
@@ -272,11 +316,8 @@ export function AdminScreen({
       )}
 
       <section className="setup-group" aria-labelledby="staff-heading">
-        <h2 id="staff-heading">Staff</h2>
-        <p className="setup-lead">
-          Who can use AuraNoteTaker and what they can do. Each person also needs an invitation to the AuraNoteTaker app in Base44, using the
-          same email address.
-        </p>
+        <h2 id="staff-heading">Team</h2>
+        <p className="setup-lead">Who can use AuraNoteTaker, what they do, and which dentist and surgery they usually work with.</p>
         <ul className="admin-list">
           {setup.staff.map((x) => (
             <li key={x.email} className={`admin-row ${x.active ? '' : 'is-muted'}`}>
@@ -285,71 +326,115 @@ export function AdminScreen({
                 <br />
                 <span className="admin-sub">
                   {x.roles.map((r) => ROLE_LABELS[r] ?? r).join(', ')}
-                  {x.clinicianId ? `, linked to ${setup.clinicians.find((c) => c.practitionerId === x.clinicianId)?.displayName ?? x.clinicianId}` : ''}
+                  {((id) => (id ? `, with ${setup.clinicians.find((c) => c.practitionerId === id)?.displayName ?? id}` : ''))(x.clinicianId ?? x.worksWithClinicianId ?? null)}
+                  {x.defaultSurgeryId ? `, ${setup.surgeries.find((y) => y.surgeryId === x.defaultSurgeryId)?.name ?? 'surgery'}` : ''}
                   {x.active ? '' : ', no access'}
                 </span>
               </span>
-              <button type="button" className="link-button" onClick={() => setProfile({ ...x })}>
+              <button type="button" className="link-button" onClick={() => setProfile({ ...x, invite: false })}>
                 Edit {x.displayName}
               </button>
             </li>
           ))}
         </ul>
 
-        <div className="admin-form" aria-label="Staff member">
-          <h3>{setup.staff.some((x) => x.email === profile.email.trim().toLowerCase()) ? 'Edit staff member' : 'Add a staff member'}</h3>
-          <label className="field">
-            <span className="field-label">Email (their Base44 sign-in)</span>
-            <input className="input" type="email" value={profile.email} onChange={(e) => setProfile({ ...profile, email: e.target.value })} />
-          </label>
-          <label className="field">
-            <span className="field-label">Name</span>
-            <input className="input" value={profile.displayName} maxLength={80} onChange={(e) => setProfile({ ...profile, displayName: e.target.value })} />
-          </label>
-          <fieldset className="field">
-            <legend className="field-label">Roles</legend>
-            {Object.entries(ROLE_LABELS).map(([role, label]) => (
-              <label key={role} className="admin-check">
-                <input
-                  type="checkbox"
-                  checked={profile.roles.includes(role)}
-                  onChange={(e) =>
-                    setProfile({ ...profile, roles: e.target.checked ? [...profile.roles, role] : profile.roles.filter((r) => r !== role) })
-                  }
-                />
-                <span>{label}</span>
-              </label>
-            ))}
-          </fieldset>
-          <label className="field">
-            <span className="field-label">Their own diary in Dentally (clinicians only)</span>
-            <select value={profile.clinicianId ?? ''} onChange={(e) => setProfile({ ...profile, clinicianId: e.target.value || null })}>
-              <option value="">None</option>
-              {activeClinicians.map((c) => (
-                <option key={c.practitionerId} value={c.practitionerId}>
-                  {c.displayName}
-                </option>
-              ))}
-            </select>
+        <div className="admin-form" aria-label="Team member">
+          <h3>{isExisting ? `Edit ${profile.displayName || 'team member'}` : 'Add a team member'}</h3>
+          <div className="admin-grid">
+            <label className="field">
+              <span className="field-label">Name</span>
+              <input className="input" value={profile.displayName} maxLength={80} onChange={(e) => setProfile({ ...profile, displayName: e.target.value })} />
+            </label>
+            <label className="field">
+              <span className="field-label">Email (what they sign in with)</span>
+              <input
+                className="input"
+                type="email"
+                value={profile.email}
+                disabled={isExisting}
+                onChange={(e) => setProfile({ ...profile, email: e.target.value })}
+              />
+            </label>
+            <label className="field">
+              <span className="field-label">Role</span>
+              <select value={primaryRole} onChange={(e) => setPrimaryRole(e.target.value)}>
+                {PRIMARY_ROLES.map(([value, label]) => (
+                  <option key={value} value={value}>
+                    {label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="field">
+              <span className="field-label">{primaryRole === 'NURSE' ? 'Dentist they work with' : 'Their diary in Dentally'}</span>
+              <select
+                value={(primaryRole === 'NURSE' ? profile.worksWithClinicianId : profile.clinicianId) ?? ''}
+                onChange={(e) =>
+                  setProfile(
+                    primaryRole === 'NURSE'
+                      ? { ...profile, worksWithClinicianId: e.target.value || null, clinicianId: null }
+                      : { ...profile, clinicianId: e.target.value || null, worksWithClinicianId: null },
+                  )
+                }
+              >
+                <option value="">None</option>
+                {activeClinicians.map((c) => (
+                  <option key={c.practitionerId} value={c.practitionerId}>
+                    {c.displayName}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="field">
+              <span className="field-label">Usual surgery</span>
+              <select value={profile.defaultSurgeryId ?? ''} onChange={(e) => setProfile({ ...profile, defaultSurgeryId: e.target.value || null })}>
+                <option value="">None</option>
+                {setup.surgeries
+                  .filter((x) => x.active)
+                  .map((x) => (
+                    <option key={x.surgeryId} value={x.surgeryId}>
+                      {x.name}
+                    </option>
+                  ))}
+              </select>
+            </label>
+          </div>
+          <label className="admin-check">
+            <input
+              type="checkbox"
+              checked={profile.roles.includes('CLINIC_ADMIN')}
+              onChange={(e) =>
+                setProfile({ ...profile, roles: e.target.checked ? [...profile.roles, 'CLINIC_ADMIN'] : profile.roles.filter((r) => r !== 'CLINIC_ADMIN') })
+              }
+            />
+            <span>Can change clinic setup (practice manager)</span>
           </label>
           <label className="admin-check">
             <input type="checkbox" checked={profile.active} onChange={(e) => setProfile({ ...profile, active: e.target.checked })} />
             <span>Has access</span>
+          </label>
+          <label className="admin-check">
+            <input type="checkbox" checked={profile.invite ?? false} onChange={(e) => setProfile({ ...profile, invite: e.target.checked })} />
+            <span>Email them an invitation to AuraNoteTaker</span>
           </label>
           <div className="actions">
             <button
               type="button"
               className="button button-primary"
               disabled={busy || !profile.email.trim() || !profile.displayName.trim() || profile.roles.length === 0}
-              onClick={() => void save('Staff member', () => backend.saveStaffProfile(profile), () => setProfile(emptyProfile))}
+              onClick={() => void saveProfile()}
             >
-              Save staff member
+              {isExisting ? 'Save changes' : 'Add team member'}
             </button>
             <button type="button" className="button button-quiet" onClick={() => setProfile(emptyProfile)}>
               Clear
             </button>
           </div>
         </div>
+      </section>
+
+      <section className="setup-group" aria-label="Note templates">
+        <TemplateManager backend={backend} />
       </section>
     </main>
   );

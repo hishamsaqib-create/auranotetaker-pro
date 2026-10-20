@@ -39,7 +39,7 @@ export function createBase44Backend(cfg: { appId: string; serverUrl?: string }):
     return headers;
   }
 
-  async function call<T>(name: string, data: Record<string, unknown> = {}): Promise<T> {
+  async function call<T>(name: string, data: Record<string, unknown> = {}, timeoutMs = REQUEST_TIMEOUT_MS): Promise<T> {
     let res: Response;
     // A request that never answers must fail, not leave buttons waiting for ever: callers retry on the next refresh.
     const controller = new AbortController();
@@ -48,7 +48,7 @@ export function createBase44Backend(cfg: { appId: string; serverUrl?: string }):
       timer = setTimeout(() => {
         controller.abort();
         reject(new BackendError('TIMEOUT', 'AuraNoteTaker\'s server took too long to answer. Try again.'));
-      }, REQUEST_TIMEOUT_MS);
+      }, timeoutMs);
     });
     try {
       res = await Promise.race([
@@ -105,6 +105,8 @@ export function createBase44Backend(cfg: { appId: string; serverUrl?: string }):
     listNoteTemplates: (includeInactive = false) => call('listNoteTemplates', { includeInactive }),
     saveNoteTemplate: (t) => call('saveNoteTemplate', { ...t }),
     recordNoteCopied: (input) => call('recordNoteCopied', { ...input }),
+    // Drafting can take most of a minute; the server gives up at 55 s, so this always hears the outcome.
+    generateNote: (input) => call('generateNote', { ...input }, 75_000),
     changeRecording: (sessionId, surgeryId, action, expectedVersion) => call('changeRecording', { sessionId, surgeryId, action, expectedVersion }),
     getSpeechToken: (sessionId, surgeryId) => call('getSpeechToken', { sessionId, surgeryId }),
     saveTranscript: (sessionId, surgeryId, segments) => call('saveTranscript', { sessionId, surgeryId, segments }),

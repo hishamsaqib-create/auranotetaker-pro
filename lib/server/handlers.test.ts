@@ -18,7 +18,9 @@ import {
   getDiary,
   getPatientSummary,
   getClinicSetup,
+  generateNote,
   getDentallyCheck,
+  getMe,
   listNoteTemplates,
   recordNoteCopied,
   saveNoteTemplate,
@@ -29,9 +31,17 @@ import {
   saveSurgeries,
 } from './handlers.ts';
 import { AesGcmContentCipher } from './cipher.ts';
-import { DemoSpeechTokenIssuer, InMemoryAuditSink, InMemoryScribeContentStore, InMemorySessionRepository, StaticClinicDirectory } from './memory.ts';
-import type { HandlerDeps, SessionRepository, SpeechTokenIssuer, StaffContext } from './ports.ts';
-import { SpeechServiceError } from './ports.ts';
+import {
+  DemoNoteGenerator,
+  DemoSpeechTokenIssuer,
+  InMemoryAuditSink,
+  InMemoryScribeContentStore,
+  InMemorySessionRepository,
+  RecordingInviter,
+  StaticClinicDirectory,
+} from './memory.ts';
+import type { HandlerDeps, NoteGenerator, SessionRepository, SpeechTokenIssuer, StaffContext } from './ports.ts';
+import { NoteGeneratorError, SpeechServiceError } from './ports.ts';
 
 const NOW = Date.parse('2026-10-20T10:40:00+01:00');
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -71,6 +81,8 @@ function deps(scenario: DemoScenario = 'normal', opts: { clock?: () => number; a
     content: new InMemoryScribeContentStore(),
     cipher: () => cipher,
     speech: new DemoSpeechTokenIssuer(clock),
+    invites: new RecordingInviter(),
+    notes: new DemoNoteGenerator(),
   };
 }
 
@@ -815,5 +827,132 @@ describe('note templates and copied notes', () => {
     const other = (await confirmPatient(nurse, d, amara)).session;
     await cancelSession(nurse, d, { sessionId: other.sessionId, expectedVersion: other.version });
     await expectAppError(recordNoteCopied(nurse, d, { sessionId: other.sessionId, templateId: null, unfilledCount: 0 }), 'SESSION_TRANSITION_REFUSED');
+  });
+});
+
+describe('generateNote', () => {
+  const at = { surgeryId: 'surgery-1' };
+  const spy = (): NoteGenerator & { calls: { system: string; prompt: string }[] } => {
+    const calls: { system: string; prompt: string }[] = [];
+    return { provider: 'ANTHROPIC', calls, generate: async (i) => (calls.push(i), { text: '  Extraction LR8. [Consent]  ', model: 'claude-test' }) };
+  };
+
+  async function stoppedWithTranscript(d: HandlerDeps) {
+    const { session } = await confirmPatient(nurse, d, confirmInput);
+    const ready = (await recordConsent(nurse, d, { sessionId: session.sessionId, given: true, expectedVersion: session.version, ...at })).session;
+    const rec = (await changeRecording(nurse, d, { sessionId: ready.sessionId, action: 'START', expectedVersion: ready.version, ...at })).session;
+    await saveTranscript(nurse, d, {
+      sessionId: rec.sessionId,
+      segments: [{ kind: 'SPEECH', segmentId: 'segment-0001', seq: 1, startMs: 0, endMs: 900, speaker: 'S1', text: 'Lower right eight today.' }],
+      ...at,
+    });
+    await saveNurseNote(nurse, d, { sessionId: rec.sessionId, text: 'Articaine 1 cartridge', expectedRevision: 0, ...at });
+    return (await changeRecording(nurse, d, { sessionId: rec.sessionId, action: 'STOP', expectedVersion: rec.version, ...at })).session;
+  }
+
+  it('drafts from the transcript, nurse notes, clinician notes and template, and audits without text', async () => {
+    const llm = spy();
+    const d = { ...deps(), notes: llm };
+    const s = await stoppedWithTranscript(d);
+    const r = await generateNote(nurse, d, { sessionId: s.sessionId, templateId: 'starter-extraction', clinicianNotes: 'Patient anxious', ...at });
+    expect(r).toEqual({ draft: 'Extraction LR8. [Consent]', provider: 'ANTHROPIC', model: 'claude-test' });
+    const prompt = llm.calls[0]!.prompt;
+    expect(prompt).toContain('Lower right eight today.');
+    expect(prompt).toContain('Articaine 1 cartridge');
+    expect(prompt).toContain('Patient anxious');
+    expect(prompt).toContain('Extraction [Tooth]');
+    // No name or date of birth reaches the model.
+    expect(prompt).not.toMatch(/Oliver|Bennett|1986/);
+    const ev = auditSink.events.filter((e) => e.action === 'NOTE_GENERATED').at(-1)!;
+    expect(ev.details).toEqual({ templateId: 'starter-extraction', provider: 'ANTHROPIC', segmentCount: 1, hasNurseNote: true, hasClinicianNotes: true, outcome: 'DRAFTED' });
+    expect(JSON.stringify(auditSink.events)).not.toMatch(/LR8|Articaine|anxious|Lower right/);
+  });
+
+  it('refuses without permission, while recording, and for someone outside the session', async () => {
+    const d = deps();
+    const { session } = await confirmPatient(nurse, d, confirmInput);
+    await expectAppError(generateNote(nurse, d, { sessionId: session.sessionId, clinicianNotes: 'x', ...at }), 'SESSION_TRANSITION_REFUSED');
+    const ready = (await recordConsent(nurse, d, { sessionId: session.sessionId, given: true, expectedVersion: session.version, ...at })).session;
+    const rec = (await changeRecording(nurse, d, { sessionId: ready.sessionId, action: 'START', expectedVersion: ready.version, ...at })).session;
+    const err = await expectAppError(generateNote(nurse, d, { sessionId: rec.sessionId, clinicianNotes: 'x', ...at }), 'SESSION_TRANSITION_REFUSED');
+    expect(err.message).toMatch(/Pause or stop recording/);
+    await expectAppError(generateNote(otherNurse, d, { sessionId: rec.sessionId, clinicianNotes: 'x', ...at }), 'FORBIDDEN');
+  });
+
+  it('refuses to draft before the server holds every transcript line the screen made', async () => {
+    const llm = spy();
+    const d = { ...deps(), notes: llm };
+    const s = await stoppedWithTranscript(d);
+    await expectAppError(generateNote(nurse, d, { sessionId: s.sessionId, clinicianNotes: '', lastSeq: 2, ...at }), 'SESSION_TRANSITION_REFUSED');
+    expect(llm.calls).toHaveLength(0);
+    await generateNote(nurse, d, { sessionId: s.sessionId, clinicianNotes: '', lastSeq: 1, ...at });
+    expect(llm.calls).toHaveLength(1);
+  });
+
+  it('audits an empty draft as failed', async () => {
+    const d = { ...deps(), notes: { provider: 'ANTHROPIC' as const, generate: async () => ({ text: '  ', model: 'm' }) } };
+    const s = await stoppedWithTranscript(d);
+    await expectAppError(generateNote(nurse, d, { sessionId: s.sessionId, clinicianNotes: '', ...at }), 'LLM_UNAVAILABLE');
+    expect(auditSink.events.filter((e) => e.action === 'NOTE_GENERATED').at(-1)!.details.outcome).toBe('FAILED');
+  });
+
+  it('never sends a declined appointment for AI processing', async () => {
+    const llm = spy();
+    const d = { ...deps(), notes: llm };
+    const { session } = await confirmPatient(nurse, d, confirmInput);
+    await recordConsent(nurse, d, { sessionId: session.sessionId, given: false, expectedVersion: session.version, ...at });
+    await expectAppError(generateNote(nurse, d, { sessionId: session.sessionId, clinicianNotes: 'Typed by hand', ...at }), 'SESSION_TRANSITION_REFUSED');
+    expect(llm.calls).toHaveLength(0);
+  });
+
+  it('says plainly when there is nothing to work from, the template is gone, or the AI service fails', async () => {
+    const d0 = deps();
+    const { session } = await confirmPatient(nurse, d0, confirmInput);
+    const ready = (await recordConsent(nurse, d0, { sessionId: session.sessionId, given: true, expectedVersion: session.version, ...at })).session;
+    await expectAppError(generateNote(nurse, d0, { sessionId: ready.sessionId, clinicianNotes: '', ...at }), 'VALIDATION');
+    await expectAppError(generateNote(nurse, d0, { sessionId: ready.sessionId, templateId: 'GONE', clinicianNotes: 'x', ...at }), 'NOT_FOUND');
+    for (const [kind, code] of [['NOT_CONFIGURED', 'LLM_NOT_CONFIGURED'], ['UNAVAILABLE', 'LLM_UNAVAILABLE'], ['INCOMPLETE', 'LLM_UNAVAILABLE']] as const) {
+      const failing: NoteGenerator = { provider: 'ANTHROPIC', generate: async () => Promise.reject(new NoteGeneratorError(kind)) };
+      await expectAppError(generateNote(nurse, { ...d0, notes: failing }, { sessionId: ready.sessionId, clinicianNotes: 'x', ...at }), code);
+    }
+    expect(auditSink.events.filter((e) => e.action === 'NOTE_GENERATED').every((e) => e.details.outcome === 'FAILED')).toBe(true);
+  });
+});
+
+describe('team members', () => {
+  it('saves the dentist and usual surgery, invites, and gives them back as the person\'s defaults', async () => {
+    const d = deps();
+    const r = await saveStaffProfile(manager, d, {
+      email: 'New.Nurse@aura.test',
+      displayName: 'New Nurse',
+      roles: ['NURSE'],
+      clinicianId: null,
+      worksWithClinicianId: 'DEMO-PR1',
+      defaultSurgeryId: 'surgery-2',
+      active: true,
+      invite: true,
+    });
+    expect(r.invite).toBe('SENT');
+    expect((d.invites as RecordingInviter).sent).toEqual(['new.nurse@aura.test']);
+    expect(r.staff.find((x) => x.email === 'new.nurse@aura.test')).toMatchObject({ clinicianId: null, worksWithClinicianId: 'DEMO-PR1', defaultSurgeryId: 'surgery-2' });
+    const me = await getMe({ ...nurse, worksWithClinicianId: 'DEMO-PR1', defaultSurgeryId: 'surgery-2' }, d);
+    expect(me).toMatchObject({ defaultClinicianId: 'DEMO-PR1', defaultSurgeryId: 'surgery-2' });
+    await expectAppError(saveStaffProfile(manager, d, { email: 'x@aura.test', displayName: 'X', roles: ['NURSE'], clinicianId: null, defaultSurgeryId: 'NOPE', active: true }), 'VALIDATION');
+    // A nurse cannot be given a dentist's own diary: that would open all of the dentist's sessions to them.
+    await expectAppError(saveStaffProfile(manager, d, { email: 'y@aura.test', displayName: 'Y', roles: ['NURSE'], clinicianId: 'DEMO-PR1', active: true }), 'VALIDATION');
+  });
+
+  it('gives no session access through the dentist a nurse works with', async () => {
+    const d = deps();
+    const { session } = await confirmPatient(dentist, d, confirmInput);
+    const linkedNurse = { ...otherNurse, worksWithClinicianId: 'DEMO-PR1' };
+    await expectAppError(recordConsent(linkedNurse, d, { sessionId: session.sessionId, given: true, expectedVersion: session.version, surgeryId: 'surgery-1' }), 'FORBIDDEN');
+  });
+
+  it('keeps the profile and reports it when the invitation fails', async () => {
+    const d = { ...deps(), invites: { invite: async () => Promise.reject(new Error('no')) } };
+    const r = await saveStaffProfile(manager, d, { email: 'a@aura.test', displayName: 'A', roles: ['DENTIST'], clinicianId: null, active: true, invite: true });
+    expect(r.invite).toBe('FAILED');
+    expect(r.staff.some((x) => x.email === 'a@aura.test')).toBe(true);
   });
 });

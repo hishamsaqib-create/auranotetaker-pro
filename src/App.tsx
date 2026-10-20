@@ -262,7 +262,13 @@ function Workspace({
         {banner}
         <Setup
           options={options}
-          initial={setup}
+          // A new computer starts from the person's usual dentist and surgery, if those are still set up.
+          initial={
+            setup ?? {
+              practitionerId: options.clinicians.some((c) => c.practitionerId === user.defaultClinicianId) ? (user.defaultClinicianId ?? undefined) : undefined,
+              surgeryId: options.surgeries.some((x) => x.surgeryId === user.defaultSurgeryId) ? (user.defaultSurgeryId ?? undefined) : undefined,
+            }
+          }
           onCancel={clinician && surgery ? () => setEditingSetup(false) : undefined}
           onSave={(s) => {
             saveDeviceSetup(s);

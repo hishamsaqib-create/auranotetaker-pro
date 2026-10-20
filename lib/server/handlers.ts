@@ -17,6 +17,7 @@ import { createSession, isTerminal, transition } from '../core/session.ts';
 import { zonedDateString } from '../core/time.ts';
 import type { NoteTemplate } from '../core/noteTemplates.ts';
 import { checkTemplate, STARTER_TEMPLATES } from '../core/noteTemplates.ts';
+import { buildNotePrompt, MAX_CLINICIAN_NOTES, NOTE_MAX_TOKENS, NOTE_SYSTEM_PROMPT } from '../core/noteGeneration.ts';
 import type { NurseNote, TranscriptSegment } from '../core/transcript.ts';
 import { contentDeleteAfterMs, orderSegments, validateNurseNoteText, validateSegments } from '../core/transcript.ts';
 import { DentallyError } from '../dentally/client.ts';
@@ -25,7 +26,7 @@ import { ContentCipherError } from './cipher.ts';
 import { AppError } from './errors.ts';
 import type { AppRole, ClinicianEntry, ClinicianRecord, HandlerDeps, StaffContext, StaffProfileRecord, SurgeryEntry, SurgeryRecord } from './ports.ts';
 import type { SpeechToken } from './ports.ts';
-import { APP_ROLES, SpeechServiceError, VersionConflictError } from './ports.ts';
+import { APP_ROLES, NoteGeneratorError, SpeechServiceError, VersionConflictError } from './ports.ts';
 
 export const CLINICAL_ROLES: readonly AppRole[] = ['DENTIST', 'THERAPIST', 'HYGIENIST', 'NURSE'];
 const CONFIRMATION_METHODS: readonly ConfirmationMethod[] = ['CONFIRMED_SUGGESTION', 'CHOSE_ALTERNATIVE', 'RESOLVED_AMBIGUITY', 'CHOSE_FROM_DIARY'];
@@ -49,6 +50,9 @@ export interface MeResponse {
   displayName: string;
   roles: AppRole[];
   clinicName: string;
+  /** From the staff profile: preselected when a computer is set up for the first time. */
+  defaultClinicianId: string | null;
+  defaultSurgeryId: string | null;
 }
 
 export interface SetupOptionsResponse {
@@ -384,7 +388,14 @@ async function applySessionEvent(
 /** The signed-in user's own profile, for the header. Refused when the profile has no roles. */
 export async function getMe(ctx: StaffContext, deps: HandlerDeps): Promise<MeResponse> {
   await requireRole(ctx, deps, APP_ROLES, 'getMe');
-  return { email: ctx.email, displayName: ctx.displayName, roles: [...ctx.roles], clinicName: deps.clinic.name };
+  return {
+    email: ctx.email,
+    displayName: ctx.displayName,
+    roles: [...ctx.roles],
+    clinicName: deps.clinic.name,
+    defaultClinicianId: ctx.clinicianId ?? ctx.worksWithClinicianId ?? null,
+    defaultSurgeryId: ctx.defaultSurgeryId ?? null,
+  };
 }
 
 /** Clinician and surgery choices for the setup screen. No patient data. */
@@ -831,7 +842,7 @@ export async function saveNoteTemplate(
 export async function recordNoteCopied(
   ctx: StaffContext,
   deps: HandlerDeps,
-  input: { sessionId?: unknown; templateId?: unknown; unfilledCount?: unknown },
+  input: { sessionId?: unknown; templateId?: unknown; unfilledCount?: unknown; aiDraft?: unknown },
 ): Promise<{ recorded: true }> {
   await requireRole(ctx, deps, CLINICAL_ROLES, 'recordNoteCopied');
   const templateId = optId(input.templateId, 'template');
@@ -850,9 +861,104 @@ export async function recordNoteCopied(
     sessionId: session?.sessionId ?? null,
     dentallyPatientId: session?.patient.dentallyPatientId ?? null,
     dentallyAppointmentId: session?.patient.appointment.appointmentId ?? null,
-    details: { templateId, unfilledCount, source: session ? 'SESSION' : 'STANDALONE' },
+    details: { templateId, unfilledCount, source: session ? 'SESSION' : 'STANDALONE', aiDraft: optBool(input.aiDraft, 'aiDraft') },
   });
   return { recorded: true };
+}
+
+export interface GenerateNoteResponse {
+  /** A draft for the clinician to check line by line. Not stored anywhere by AuraNoteTaker. */
+  draft: string;
+  provider: 'ANTHROPIC' | 'DEMO';
+  model: string;
+}
+
+const GENERATE_STATUSES = new Set<ScribeSession['status']>(['READY', 'PAUSED', 'STOPPED']);
+
+/**
+ * Drafts the note for a session from its transcript, nurse notes and the clinician's own notes, in the shape
+ * of a template if one is chosen.
+ *
+ * SAFETY (decision D7, hazards H05 to H09): only with the patient's recorded permission; never while recording
+ * (the transcript would be incomplete); the draft is returned to the clinician and not stored; the audit records
+ * that a draft was made and from what, never its text.
+ */
+export async function generateNote(
+  ctx: StaffContext,
+  deps: HandlerDeps,
+  input: { sessionId?: unknown; surgeryId?: unknown; templateId?: unknown; clinicianNotes?: unknown; lastSeq?: unknown },
+): Promise<GenerateNoteResponse> {
+  const s = await loadScribeSession(ctx, deps, input, 'generateNote');
+  if (s.consent.status !== 'GIVEN') {
+    throw new AppError('SESSION_TRANSITION_REFUSED', 'The patient did not agree to the AI scribe, so nothing from this appointment can be sent for AI processing. Write the note from a template instead.');
+  }
+  if (s.status === 'RECORDING') throw new AppError('SESSION_TRANSITION_REFUSED', 'Pause or stop recording first, so the draft includes everything.');
+  if (!GENERATE_STATUSES.has(s.status)) throw new AppError('SESSION_TRANSITION_REFUSED', 'A note cannot be drafted for this session now.');
+  if (input.clinicianNotes !== undefined && input.clinicianNotes !== null && typeof input.clinicianNotes !== 'string') {
+    throw new AppError('VALIDATION', 'Your notes could not be read.');
+  }
+  const clinicianNotes = typeof input.clinicianNotes === 'string' ? input.clinicianNotes : '';
+  if (clinicianNotes.length > MAX_CLINICIAN_NOTES) throw new AppError('VALIDATION', 'Your notes are too long to send.');
+
+  const templateId = optId(input.templateId, 'template');
+  let template: { templateId: string; title: string; body: string } | null = null;
+  if (templateId) {
+    const all = [...STARTER_TEMPLATES, ...(await deps.admin.listNoteTemplates(deps.clinic.clinicId)).filter((t) => t.active)];
+    template = all.find((t) => t.templateId === templateId) ?? null;
+    if (!template) throw new AppError('NOT_FOUND', 'That template is no longer in use. Choose another.');
+  }
+
+  const content = await readScribeContent(ctx, deps, s);
+  // The screen says which transcript lines it has made; a draft is only made once the server holds them all.
+  const lastSeq = input.lastSeq === undefined || input.lastSeq === null ? 0 : reqCount(input.lastSeq, 'transcript position');
+  if (content.segments.reduce((m, x) => Math.max(m, x.seq), 0) < lastSeq) {
+    throw new AppError('SESSION_TRANSITION_REFUSED', 'Some of the transcript is still saving. Wait a moment, then try again.');
+  }
+  const built = buildNotePrompt({
+    appointmentDate: zonedDateString(s.patient.appointment.startMs, deps.clinic.timeZone),
+    appointmentReason: s.patient.appointment.reason,
+    templateTitle: template?.title ?? null,
+    templateBody: template?.body ?? null,
+    segments: content.segments,
+    nurseNotes: content.nurseNote?.text ?? null,
+    clinicianNotes,
+  });
+  if (!built.ok) throw new AppError('VALIDATION', built.message);
+
+  const details = {
+    templateId: template?.templateId ?? null,
+    provider: deps.notes.provider,
+    segmentCount: content.segments.length,
+    hasNurseNote: content.nurseNote !== null && content.nurseNote.text.trim() !== '',
+    hasClinicianNotes: clinicianNotes.trim() !== '',
+  };
+  let result: { text: string; model: string };
+  try {
+    result = await deps.notes.generate({ system: NOTE_SYSTEM_PROMPT, prompt: built.prompt, maxTokens: NOTE_MAX_TOKENS });
+  } catch (err) {
+    await audit(ctx, deps, 'NOTE_GENERATED', {
+      sessionId: s.sessionId,
+      dentallyPatientId: s.patient.dentallyPatientId,
+      dentallyAppointmentId: s.patient.appointment.appointmentId,
+      details: { ...details, outcome: 'FAILED' },
+    });
+    const kind = err instanceof NoteGeneratorError ? err.kind : 'UNAVAILABLE';
+    if (kind === 'NOT_CONFIGURED' || kind === 'AUTH') {
+      throw new AppError('LLM_NOT_CONFIGURED', 'AuraNoteTaker could not sign in to the AI service. Please tell the practice manager.');
+    }
+    if (kind === 'REFUSED') throw new AppError('LLM_UNAVAILABLE', 'The AI service would not draft this note. Write it from the template instead.');
+    if (kind === 'INCOMPLETE') throw new AppError('LLM_UNAVAILABLE', 'The draft was cut short, so it was not shown. Write the note from the template instead.');
+    throw new AppError('LLM_UNAVAILABLE', 'The AI service is not responding. Try again shortly, or write the note from the template.');
+  }
+  const draft = result.text.trim();
+  await audit(ctx, deps, 'NOTE_GENERATED', {
+    sessionId: s.sessionId,
+    dentallyPatientId: s.patient.dentallyPatientId,
+    dentallyAppointmentId: s.patient.appointment.appointmentId,
+    details: { ...details, outcome: draft ? 'DRAFTED' : 'FAILED' },
+  });
+  if (!draft) throw new AppError('LLM_UNAVAILABLE', 'The AI service returned an empty draft. Try again.');
+  return { draft, provider: deps.notes.provider, model: result.model };
 }
 
 /** Connection status for the header. No patient data. */
@@ -1079,14 +1185,8 @@ async function deleteIfPermissionEnded(ctx: StaffContext, deps: HandlerDeps, ses
   throw new AppError('SESSION_TRANSITION_REFUSED', 'Permission for this appointment has ended, so nothing more is kept.');
 }
 
-/** The session's transcript and nurse notes so far, for the scribe screen after a refresh. */
-export async function getScribeContent(
-  ctx: StaffContext,
-  deps: HandlerDeps,
-  input: { sessionId?: unknown; surgeryId?: unknown },
-): Promise<ScribeContentResponse> {
-  const s = await loadScribeSession(ctx, deps, input, 'getScribeContent');
-  if (s.consent.status !== 'GIVEN' || isTerminal(s.status)) return { segments: [], nurseNote: null };
+/** Decrypts a session's saved transcript and nurse notes. No permission checks and no audit: callers do both. */
+async function readScribeContent(ctx: StaffContext, deps: HandlerDeps, s: ScribeSession): Promise<ScribeContentResponse> {
   const cipher = await getCipher(deps);
   let segments: TranscriptSegment[];
   let nurseNote: NurseNote | null;
@@ -1121,6 +1221,18 @@ export async function getScribeContent(
     }
     throw err;
   }
+  return { segments, nurseNote };
+}
+
+/** The session's transcript and nurse notes so far, for the scribe screen after a refresh. */
+export async function getScribeContent(
+  ctx: StaffContext,
+  deps: HandlerDeps,
+  input: { sessionId?: unknown; surgeryId?: unknown },
+): Promise<ScribeContentResponse> {
+  const s = await loadScribeSession(ctx, deps, input, 'getScribeContent');
+  if (s.consent.status !== 'GIVEN' || isTerminal(s.status)) return { segments: [], nurseNote: null };
+  const { segments, nurseNote } = await readScribeContent(ctx, deps, s);
   const dedupeKey = `content:${s.sessionId}`;
   if (!(await deps.audit.hasRecent(ctx.clinicId, ctx.email, dedupeKey, deps.clock() - CONTENT_VIEW_AUDIT_WINDOW_MS))) {
     await audit(ctx, deps, 'SCRIBE_CONTENT_VIEWED', {
@@ -1282,8 +1394,17 @@ export async function saveSurgeries(ctx: StaffContext, deps: HandlerDeps, input:
 export async function saveStaffProfile(
   ctx: StaffContext,
   deps: HandlerDeps,
-  input: { email?: unknown; displayName?: unknown; roles?: unknown; clinicianId?: unknown; active?: unknown },
-): Promise<ClinicSetupResponse> {
+  input: {
+    email?: unknown;
+    displayName?: unknown;
+    roles?: unknown;
+    clinicianId?: unknown;
+    worksWithClinicianId?: unknown;
+    defaultSurgeryId?: unknown;
+    active?: unknown;
+    invite?: unknown;
+  },
+): Promise<ClinicSetupResponse & { invite: 'SENT' | 'FAILED' | null }> {
   await requireRole(ctx, deps, ['CLINIC_ADMIN'], 'saveStaffProfile');
   if (typeof input.email !== 'string' || !EMAIL.test(input.email.trim())) throw new AppError('VALIDATION', 'Enter a valid email address.');
   const email = input.email.trim().toLowerCase();
@@ -1292,13 +1413,24 @@ export async function saveStaffProfile(
   if (roles.length === 0) throw new AppError('VALIDATION', 'Choose at least one role.');
   const active = reqBool(input.active, 'active');
   const clinicianId = optId(input.clinicianId, 'clinician');
-  if (clinicianId !== null && !(await deps.directory.listClinicians(deps.clinic.clinicId)).some((c) => c.practitionerId === clinicianId)) {
-    throw new AppError('VALIDATION', 'That clinician is not set up in AuraNoteTaker.');
+  const worksWithClinicianId = optId(input.worksWithClinicianId, 'dentist');
+  const configured = await deps.directory.listClinicians(deps.clinic.clinicId);
+  for (const id of [clinicianId, worksWithClinicianId]) {
+    if (id !== null && !configured.some((c) => c.practitionerId === id)) throw new AppError('VALIDATION', 'That clinician is not set up in AuraNoteTaker.');
   }
+  // An own diary gives access to that clinician's sessions, so only clinicians who see patients have one.
+  if (clinicianId !== null && !roles.some((r) => r === 'DENTIST' || r === 'THERAPIST' || r === 'HYGIENIST')) {
+    throw new AppError('VALIDATION', 'Only dentists, therapists and hygienists have their own diary. For a nurse, choose the dentist they work with.');
+  }
+  const defaultSurgeryId = optId(input.defaultSurgeryId, 'surgery');
+  if (defaultSurgeryId !== null && !(await deps.directory.listSurgeries(deps.clinic.clinicId)).some((s) => s.surgeryId === defaultSurgeryId)) {
+    throw new AppError('VALIDATION', 'That surgery is not set up in AuraNoteTaker.');
+  }
+  const invite = optBool(input.invite, 'invite');
 
   const staff = await deps.admin.listStaff(deps.clinic.clinicId);
   const before = staff.find((x) => x.email === email);
-  const record: StaffProfileRecord = { email, displayName, roles, clinicianId, active };
+  const record: StaffProfileRecord = { email, displayName, roles, clinicianId, worksWithClinicianId, defaultSurgeryId, active };
   const after = [...staff.filter((x) => x.email !== email), record];
   if (!after.some((x) => x.active && x.roles.includes('CLINIC_ADMIN'))) {
     throw new AppError('VALIDATION', 'At least one active practice manager must keep access to setup.');
@@ -1307,5 +1439,17 @@ export async function saveStaffProfile(
   await auditAfterChange(ctx, deps, 'CONFIG_CHANGED', {
     details: { entity: 'STAFF_PROFILE', change: before ? 'UPDATED' : 'CREATED', count: 1 },
   });
-  return clinicSetup(deps);
+  // The profile is saved either way; a failed invitation is reported so it can be sent from Base44 instead.
+  let inviteResult: 'SENT' | 'FAILED' | null = null;
+  if (invite && active) {
+    try {
+      await deps.invites.invite(email);
+      inviteResult = 'SENT';
+      await auditAfterChange(ctx, deps, 'CONFIG_CHANGED', { details: { entity: 'STAFF_PROFILE', change: 'INVITED', count: 1 } });
+    } catch (err) {
+      if (err instanceof AppError) throw err;
+      inviteResult = 'FAILED';
+    }
+  }
+  return { ...(await clinicSetup(deps)), invite: inviteResult };
 }

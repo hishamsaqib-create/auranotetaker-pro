@@ -7,6 +7,7 @@ import type {
   ActiveSessionResponse,
   ClinicSetupResponse,
   ConfirmPatientResponse,
+  GenerateNoteResponse,
   DentallyCheckResponse,
   DiaryResponse,
   MeResponse,
@@ -68,11 +69,13 @@ export interface AppBackend {
   getClinicSetup(): Promise<ClinicSetupResponse>;
   saveClinicians(clinicians: ClinicianChoice[]): Promise<ClinicSetupResponse>;
   saveSurgeries(surgeries: SurgeryChoice[]): Promise<ClinicSetupResponse>;
-  saveStaffProfile(profile: StaffProfileInput): Promise<ClinicSetupResponse>;
+  saveStaffProfile(profile: StaffProfileInput): Promise<ClinicSetupResponse & { invite: 'SENT' | 'FAILED' | null }>;
   listNoteTemplates(includeInactive?: boolean): Promise<NoteTemplatesResponse>;
   saveNoteTemplate(t: { templateId: string | null; title: string; body: string; active: boolean }): Promise<NoteTemplatesResponse & { templateId: string }>;
   /** Audit only: a finished note was copied for Dentally. Never sends the note text. */
-  recordNoteCopied(input: { sessionId: string | null; templateId: string | null; unfilledCount: number }): Promise<{ recorded: true }>;
+  recordNoteCopied(input: { sessionId: string | null; templateId: string | null; unfilledCount: number; aiDraft: boolean }): Promise<{ recorded: true }>;
+  /** Drafts the session's note with AI from its transcript, nurse notes and the clinician's own notes. */
+  generateNote(input: { sessionId: string; surgeryId: string; templateId: string | null; clinicianNotes: string; lastSeq: number }): Promise<GenerateNoteResponse>;
   /** Practice manager: today's Dentally diary counted by practitioner and room ID (no patient data). */
   getDentallyCheck(): Promise<DentallyCheckResponse>;
   changeRecording(sessionId: string, surgeryId: string, action: RecordingAction, expectedVersion: number): Promise<RecordingResponse>;
@@ -98,7 +101,13 @@ export interface StaffProfileInput {
   displayName: string;
   roles: string[];
   clinicianId: string | null;
+  /** For a nurse: the dentist they usually work with (preselects their computer, grants no access). */
+  worksWithClinicianId?: string | null;
+  /** The surgery they usually work in. */
+  defaultSurgeryId?: string | null;
   active: boolean;
+  /** Send them a Base44 invitation to the app. */
+  invite?: boolean;
 }
 
 export interface DemoUser {

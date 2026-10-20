@@ -21,6 +21,7 @@ import type { AppBackend } from '../backend/types.ts';
 import { BackendError } from '../backend/types.ts';
 import type { CaptureHandle, StartCapture } from './microphone.ts';
 import { MicrophoneError } from './microphone.ts';
+import { resetPendingSaves, setTranscriptPending } from './pendingSaves.ts';
 import type { ConnectTranscriber, Transcriber } from './transcriber.ts';
 
 export type ScribePhase =
@@ -535,6 +536,12 @@ export function useScribe(o: UseScribeOptions) {
     },
     [patch],
   );
+
+  // Tell the note writer what is still waiting to be saved, so it does not draft from part of the appointment.
+  useEffect(() => {
+    setTranscriptPending(state.unsaved + (inFlight.current ? 1 : 0), seq.current);
+  }, [state.unsaved, state.lines.length]);
+  useEffect(() => () => resetPendingSaves(), []);
 
   // Unsaved transcript or a live microphone: ask before the page is closed.
   useEffect(() => {

@@ -278,13 +278,17 @@ describe('AuraNoteTaker main clinical screen (demo mode)', () => {
     await user.click(screen.getByRole('button', { name: /Show 1 switched-off or inactive practitioner/ }));
     expect(screen.getByRole('checkbox', { name: /Emma Reid/ })).not.toBeChecked();
 
-    await user.type(screen.getByLabelText('Email (their Base44 sign-in)'), 'new.nurse@demo.invalid');
+    // Quick add: name, email, role, the dentist they work with, their usual surgery, and an invitation.
     await user.type(screen.getByLabelText('Name'), 'New Nurse');
-    await user.click(screen.getByRole('checkbox', { name: 'Nurse' }));
-    await user.click(screen.getByRole('button', { name: 'Save staff member' }));
-    expect(await screen.findByText('Staff member saved.')).toBeInTheDocument();
+    await user.type(screen.getByLabelText('Email (what they sign in with)'), 'new.nurse@demo.invalid');
+    await user.selectOptions(screen.getByLabelText('Role'), 'NURSE');
+    await user.selectOptions(screen.getByLabelText('Dentist they work with'), 'DEMO-PR1');
+    await user.selectOptions(screen.getByLabelText('Usual surgery'), 'DEMO-SURGERY-1');
+    await user.click(screen.getByRole('button', { name: 'Add team member' }));
+    expect(await screen.findByText('New Nurse saved and invited.')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Edit New Nurse' })).toBeInTheDocument();
-    expect(backend.demo!.auditEvents().filter((e) => e.action === 'CONFIG_CHANGED')).toHaveLength(2);
+    expect(screen.getByText(/Nurse, with Dr Sarah Lin, Surgery 1/)).toBeInTheDocument();
+    expect(backend.demo!.auditEvents().filter((e) => e.action === 'CONFIG_CHANGED').map((e) => e.details.change)).toEqual(['SAVED', 'CREATED', 'INVITED']);
   });
 
   it('offers first-run setup when the app has no clinic yet', async () => {
