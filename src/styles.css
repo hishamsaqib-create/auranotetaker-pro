@@ -93,7 +93,9 @@ input {
 
 .main {
   flex: 1;
-  padding: 28px 32px 48px;
+  padding-block: 28px 48px;
+  padding-left: max(32px, env(safe-area-inset-left, 0px));
+  padding-right: max(32px, env(safe-area-inset-right, 0px));
 }
 
 .workspace {
@@ -110,11 +112,34 @@ input {
 .topbar {
   display: grid;
   grid-template-columns: auto 1fr auto auto auto;
+  grid-template-areas: 'brand context clock status user';
   align-items: center;
-  gap: 24px;
-  padding: 10px 32px;
+  gap: 8px 24px;
+  padding-block: 10px;
+  padding-left: max(32px, env(safe-area-inset-left, 0px));
+  padding-right: max(32px, env(safe-area-inset-right, 0px));
   background: var(--surface);
   border-bottom: 1px solid var(--line);
+}
+
+.topbar > .brand {
+  grid-area: brand;
+}
+
+.topbar-context {
+  grid-area: context;
+}
+
+.topbar > .clock {
+  grid-area: clock;
+}
+
+.topbar-status {
+  grid-area: status;
+}
+
+.topbar-user {
+  grid-area: user;
 }
 
 .brand {
@@ -303,7 +328,9 @@ input {
   flex-wrap: wrap;
   align-items: center;
   gap: 12px 24px;
-  padding: 10px 32px 10px 0;
+  padding-block: 10px;
+  padding-left: 0;
+  padding-right: max(32px, env(safe-area-inset-right, 0px));
   background: #fbf6ea;
   border-bottom: 1px solid #eadfc4;
   font-size: 16px;
@@ -796,7 +823,8 @@ input {
 .setup {
   max-width: 1000px;
   margin: 40px auto;
-  padding: 0 32px;
+  padding-left: max(32px, env(safe-area-inset-left, 0px));
+  padding-right: max(32px, env(safe-area-inset-right, 0px));
   width: 100%;
 }
 
@@ -870,7 +898,9 @@ input {
   min-height: 100vh;
   display: grid;
   place-items: center;
-  padding: 32px;
+  padding-block: 32px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
 }
 
 .gate-panel {
@@ -930,12 +960,13 @@ input {
 @media (max-width: 1100px) {
   .topbar {
     grid-template-columns: auto 1fr auto;
+    grid-template-areas:
+      'brand context clock'
+      'status status user';
   }
 
-  .topbar-status,
   .topbar-user {
-    grid-column: span 3;
-    justify-content: flex-start;
+    justify-content: flex-end;
   }
 }
 
@@ -945,13 +976,19 @@ input {
   }
 
   .main {
-    padding: 20px 16px 40px;
+    padding-block: 20px 40px;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
   }
 
   .topbar,
   .setup {
-    padding-left: 16px;
-    padding-right: 16px;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+  }
+
+  .demo-banner {
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
   }
 
   .patient {
@@ -966,9 +1003,96 @@ input {
     grid-template-columns: 1fr;
   }
 
+  .patient-facts dd {
+    margin-bottom: 6px;
+  }
+
   .locked-facts {
     grid-auto-flow: row;
     grid-template-columns: 1fr 1fr;
     grid-template-rows: none;
+    row-gap: 10px;
+  }
+
+  .locked-facts > div {
+    display: block;
+  }
+}
+
+@media (max-width: 600px) {
+  html,
+  body {
+    font-size: 17px;
+  }
+
+  .topbar {
+    grid-template-columns: 1fr auto;
+    grid-template-areas:
+      'brand clock'
+      'context context'
+      'status status'
+      'user user';
+  }
+
+  .topbar-context,
+  .topbar-status {
+    flex-wrap: wrap;
+  }
+
+  .topbar-user {
+    justify-content: flex-start;
+  }
+
+  .clock {
+    font-size: 24px;
+  }
+
+  .demo-tape {
+    width: 20px;
+  }
+
+  .demo-audit {
+    margin-left: 0;
+  }
+
+  .state-title {
+    font-size: 24px;
+  }
+
+  .patient-name {
+    font-size: 30px;
+  }
+
+  .locked {
+    padding: 18px 20px 20px;
+  }
+
+  .locked-name {
+    font-size: 30px;
+  }
+
+  .locked-facts {
+    grid-template-columns: 1fr;
+  }
+
+  .actions .button {
+    width: 100%;
+  }
+
+  .diary-button,
+  .diary-static {
+    grid-template-columns: 92px minmax(0, 1fr);
+    padding: 12px 16px;
+  }
+
+  .diary-tags {
+    grid-column: 2;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: flex-start;
+  }
+
+  .gate-panel {
+    padding: 24px 20px 28px;
   }
 }

@@ -16,7 +16,8 @@
     "test:watch": "vitest",
     "sync:shared": "node scripts/sync-base44-shared.mjs",
     "check:shared": "node scripts/sync-base44-shared.mjs --check",
-    "roadmap:issues": "node scripts/github/print-roadmap-issues.mjs"
+    "roadmap:issues": "node scripts/github/print-roadmap-issues.mjs",
+    "build:demo-page": "node scripts/build-demo-artifact.mjs"
   },
   "dependencies": {
     "@base44/sdk": "^0.8.54",
