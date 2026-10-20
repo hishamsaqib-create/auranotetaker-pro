@@ -1,0 +1,54 @@
+name: Deploy
+
+# Deploys main to the AuraNoteTaker app in Base44 once CI has passed on it, so no one has to deploy from a laptop.
+# Needs one repository secret, BASE44_API_KEY (a Base44 workspace API key, starts with b44k_), added by Hisham in
+# GitHub: Settings > Secrets and variables > Actions. The value never appears in this repository or in logs.
+#
+# SAFETY: only commits on main that passed CI are deployed. Changes with a clinical-safety impact reach main only
+# through a pull request that Hisham approves (CLAUDE.md, "Escalate, do not decide").
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch: # "Run workflow" button, to redeploy by hand
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy to Base44
+    if: github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Check the deploy key is set
+        env:
+          BASE44_API_KEY: ${{ secrets.BASE44_API_KEY }}
+        run: |
+          if [ -z "$BASE44_API_KEY" ]; then
+            echo "::error::Add the BASE44_API_KEY repository secret (Settings > Secrets and variables > Actions)."
+            exit 1
+          fi
+      - run: npm run check:shared
+      - run: npm run build
+      - name: Deploy entities, functions and site
+        env:
+          BASE44_API_KEY: ${{ secrets.BASE44_API_KEY }}
+          BASE44_APP_ID: 6ad7288395750d0c318dc063
+          CI: 'true'
+        run: npx --yes base44@0.1.33 deploy -y

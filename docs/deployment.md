@@ -142,3 +142,7 @@ Framing cannot be blocked from a `<meta>` tag: browsers ignore `frame-ancestors`
 - [ ] Wired or USB desk microphone tested; exclusive mode off
 - [ ] Staff sign in with their own accounts; no shared logins
 - [ ] Clinician and surgery set on first use
+
+## Automatic deployment
+
+`.github/workflows/deploy.yml` deploys `main` to the Base44 app after CI passes on it (entities, functions and site), using the `BASE44_API_KEY` repository secret (a Base44 workspace API key, `b44k_…`) and the app ID. It can also be run by hand from the Actions tab. Changes with a clinical-safety impact go through a pull request that Hisham approves before they reach `main`.

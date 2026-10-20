@@ -21,7 +21,16 @@ const emptyProfile: StaffProfileInput = { email: '', displayName: '', roles: [],
  * Practice manager's setup: which Dentally clinicians and surgeries AuraNoteTaker uses, and who can sign in
  * with which roles. Reads practitioner and room lists from Dentally, never patients.
  */
-export function AdminScreen({ backend, onClose }: { backend: AppBackend; onClose?: () => void }) {
+export function AdminScreen({
+  backend,
+  onClose,
+  hasClinicalRole = true,
+}: {
+  backend: AppBackend;
+  onClose?: () => void | Promise<void>;
+  /** False for a practice manager with no clinical role: leaving needs a clinical role first. */
+  hasClinicalRole?: boolean;
+}) {
   const [setup, setSetup] = useState<ClinicSetupResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState<string | null>(null);
@@ -83,12 +92,25 @@ export function AdminScreen({ backend, onClose }: { backend: AppBackend; onClose
     <main className="setup admin">
       <div className="state-heading">
         <h1>Set up {setup.clinicName}</h1>
-        {onClose && (
-          <button type="button" className="link-button" onClick={onClose}>
+        {onClose && hasClinicalRole && (
+          <button type="button" className="link-button" onClick={() => void onClose()}>
             Back to the clinical screen
           </button>
         )}
       </div>
+      {onClose && !hasClinicalRole && (
+        <Notice
+          tone="info"
+          title="To use the clinical screen, give yourself a clinical role"
+          action={
+            <button type="button" className="button button-secondary" onClick={() => void onClose()}>
+              Go to the clinical screen
+            </button>
+          }
+        >
+          Under Staff, edit your own entry, tick Dentist (or your role), choose your diary, and save. Then go to the clinical screen.
+        </Notice>
+      )}
       {error && <Notice tone="bad" title={error} />}
       {saved && <Notice tone="info" title={`${saved} saved.`} />}
       {setup.dentallyError && (

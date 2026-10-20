@@ -73,9 +73,12 @@ export function App({ backend, clock = Date.now }: AppProps) {
 
   return (
     <Workspace
+      // A change of roles (e.g. the practice manager giving themselves a clinical role) starts the screen afresh.
+      key={[...user.roles].sort().join(',')}
       backend={backend}
       user={user}
       clock={clock}
+      onReloadUser={loadUser}
       onSignOut={async () => {
         await backend.signOut();
         setUser(null);
@@ -87,7 +90,19 @@ export function App({ backend, clock = Date.now }: AppProps) {
 /** A computer clock further out than this gets a visible warning (the app itself uses the server's time). */
 export const CLOCK_SKEW_WARNING_MS = 2 * MINUTE_MS;
 
-function Workspace({ backend, user, clock, onSignOut }: { backend: AppBackend; user: CurrentUser; clock: () => number; onSignOut: () => void }) {
+function Workspace({
+  backend,
+  user,
+  clock,
+  onSignOut,
+  onReloadUser,
+}: {
+  backend: AppBackend;
+  user: CurrentUser;
+  clock: () => number;
+  onSignOut: () => void;
+  onReloadUser: () => Promise<void>;
+}) {
   const localNow = useNow(1000, clock);
   const [options, setOptions] = useState<SetupOptionsResponse | null>(null);
   const [optionsError, setOptionsError] = useState<string | null>(null);
@@ -189,8 +204,10 @@ function Workspace({ backend, user, clock, onSignOut }: { backend: AppBackend; u
                   // Clinicians or surgeries may have changed: load the choices again.
                   backend.getSetupOptions().then(setOptions).catch(() => undefined);
                 }
-              : undefined
+              : // Not clinical yet: check the profile again, in case a clinical role was just added.
+                () => onReloadUser()
           }
+          hasClinicalRole={isClinical}
         />
       </div>
     );
