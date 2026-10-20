@@ -735,6 +735,37 @@ export async function getSessionPatient(ctx: StaffContext, deps: HandlerDeps, in
   return patient;
 }
 
+export interface DentallyCheckResponse {
+  date: string;
+  /** Today's appointments in Dentally across all practitioners, counted by ID. No patient data. */
+  total: number;
+  rejected: number;
+  byPractitioner: Record<string, number>;
+  byRoom: Record<string, number>;
+  /** Dentally practitioners with their linked user IDs, to match against the diary. */
+  practitioners: { practitionerId: string; userId: string | null; displayName: string; active: boolean }[];
+}
+
+/**
+ * Setup check for the practice manager: which practitioner and room IDs today's Dentally diary uses, so the
+ * clinicians and surgeries in AuraNoteTaker can be matched to them. Counts and IDs only, never patients.
+ */
+export async function getDentallyCheck(ctx: StaffContext, deps: HandlerDeps): Promise<DentallyCheckResponse> {
+  await requireRole(ctx, deps, ['CLINIC_ADMIN'], 'getDentallyCheck');
+  const date = zonedDateString(deps.clock(), deps.clinic.timeZone);
+  const [diary, practitioners] = await callDentally(() =>
+    Promise.all([deps.dentally.getTodaysAppointments({ date, siteId: deps.clinic.dentallySiteId }), deps.dentally.listPractitioners()]),
+  );
+  const byPractitioner: Record<string, number> = {};
+  const byRoom: Record<string, number> = {};
+  for (const a of diary.appointments) {
+    byPractitioner[a.practitionerId] = (byPractitioner[a.practitionerId] ?? 0) + 1;
+    const room = a.roomId ?? 'none';
+    byRoom[room] = (byRoom[room] ?? 0) + 1;
+  }
+  return { date, total: diary.appointments.length, rejected: diary.rejectedCount, byPractitioner, byRoom, practitioners };
+}
+
 /** Connection status for the header. No patient data. */
 export async function getDentallyStatus(ctx: StaffContext, deps: HandlerDeps): Promise<DentallyStatusResponse> {
   await requireRole(ctx, deps, [...CLINICAL_ROLES, 'CLINIC_ADMIN'], 'getDentallyStatus');

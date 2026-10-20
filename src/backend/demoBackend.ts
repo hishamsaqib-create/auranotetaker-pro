@@ -14,6 +14,7 @@ import {
   saveTranscript,
   getActiveSession,
   getClinicSetup,
+  getDentallyCheck,
   getDiary,
   getMe,
   getPatientSummary,
@@ -153,6 +154,7 @@ export function createDemoBackend(opts: DemoBackendOptions = {}): AppBackend {
     saveClinicians: (clinicians) => run(() => saveClinicians(ctx(), deps, { clinicians })),
     saveSurgeries: (surgeries) => run(() => saveSurgeries(ctx(), deps, { surgeries })),
     saveStaffProfile: (profile) => run(() => saveStaffProfile(ctx(), deps, { ...profile })),
+    getDentallyCheck: () => run(() => getDentallyCheck(ctx(), deps)),
     changeRecording: (sessionId, surgeryId, action, expectedVersion) =>
       run(() => changeRecording(ctx(), deps, { sessionId, surgeryId, action, expectedVersion })),
     getSpeechToken: (sessionId, surgeryId) => run(() => getSpeechToken(ctx(), deps, { sessionId, surgeryId })),

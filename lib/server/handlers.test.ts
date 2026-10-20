@@ -18,6 +18,7 @@ import {
   getDiary,
   getPatientSummary,
   getClinicSetup,
+  getDentallyCheck,
   getSessionPatient,
   recordConsent,
   saveClinicians,
@@ -751,5 +752,16 @@ describe('scribe capture', () => {
     expect(await d.content.listSegments(CLINIC, 'old-session')).toEqual([]);
     const failing = { ...d, content: Object.assign(Object.create(Object.getPrototypeOf(d.content)), d.content, { purgeExpired: async () => Promise.reject(new Error('down')) }) } as HandlerDeps;
     expect((await getDiary(nurse, failing, { practitionerId: 'DEMO-PR1' })).retentionCleanupFailed).toBe(true);
+  });
+});
+
+describe('getDentallyCheck', () => {
+  it('counts today\'s Dentally diary by practitioner and room, for the practice manager only, with no patient data', async () => {
+    const d = deps();
+    const r = await getDentallyCheck(manager, d);
+    expect(r.total).toBeGreaterThan(0);
+    expect(Object.values(r.byPractitioner).reduce((a, b) => a + b, 0)).toBe(r.total);
+    expect(JSON.stringify(r)).not.toMatch(/Oliver|Bennett|DEMO-P1/);
+    await expectAppError(getDentallyCheck(nurse, d), 'FORBIDDEN');
   });
 });

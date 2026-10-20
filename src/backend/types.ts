@@ -7,6 +7,7 @@ import type {
   ActiveSessionResponse,
   ClinicSetupResponse,
   ConfirmPatientResponse,
+  DentallyCheckResponse,
   DiaryResponse,
   MeResponse,
   NurseNoteResponse,
@@ -67,6 +68,8 @@ export interface AppBackend {
   saveClinicians(clinicians: ClinicianChoice[]): Promise<ClinicSetupResponse>;
   saveSurgeries(surgeries: SurgeryChoice[]): Promise<ClinicSetupResponse>;
   saveStaffProfile(profile: StaffProfileInput): Promise<ClinicSetupResponse>;
+  /** Practice manager: today's Dentally diary counted by practitioner and room ID (no patient data). */
+  getDentallyCheck(): Promise<DentallyCheckResponse>;
   changeRecording(sessionId: string, surgeryId: string, action: RecordingAction, expectedVersion: number): Promise<RecordingResponse>;
   getSpeechToken(sessionId: string, surgeryId: string): Promise<SpeechTokenResponse>;
   saveTranscript(sessionId: string, surgeryId: string, segments: TranscriptSegmentInput[]): Promise<SaveTranscriptResponse>;
