@@ -37,40 +37,9 @@ export class MicrophoneError extends Error {
   }
 }
 
-const CHUNK_SAMPLES = SAMPLE_RATE / 10;
-
-// Averages input samples into 16 kHz output (a simple low-pass and resample), then sends 100 ms chunks.
-const WORKLET_SOURCE = `
-class PcmCapture extends AudioWorkletProcessor {
-  constructor() {
-    super();
-    this.ratio = sampleRate / ${SAMPLE_RATE};
-    this.phase = 0; this.acc = 0; this.accN = 0;
-    this.out = new Int16Array(${CHUNK_SAMPLES}); this.n = 0; this.sumSq = 0;
-  }
-  process(inputs) {
-    const ch = inputs[0] && inputs[0][0];
-    if (!ch) return true;
-    for (let i = 0; i < ch.length; i++) {
-      this.acc += ch[i]; this.accN++; this.phase += 1;
-      if (this.phase >= this.ratio) {
-        this.phase -= this.ratio;
-        let v = this.acc / this.accN; this.acc = 0; this.accN = 0;
-        v = v > 1 ? 1 : v < -1 ? -1 : v;
-        this.sumSq += v * v;
-        this.out[this.n++] = v < 0 ? v * 0x8000 : v * 0x7fff;
-        if (this.n === this.out.length) {
-          const level = Math.min(1, Math.sqrt(this.sumSq / this.n) * 4);
-          this.port.postMessage({ pcm: this.out.buffer, level }, [this.out.buffer]);
-          this.out = new Int16Array(${CHUNK_SAMPLES}); this.n = 0; this.sumSq = 0;
-        }
-      }
-    }
-    return true;
-  }
-}
-registerProcessor('pcm-capture', PcmCapture);
-`;
+/** The worklet lives in public/ and is served from the app's own origin (no blob: scripts under the CSP). */
+const WORKLET_URL = '/pcm-capture-worklet.js';
+if (SAMPLE_RATE !== 16_000) throw new Error('pcm-capture-worklet.js is written for 16 kHz');
 
 export const listMicrophones: ListMicrophones = async () => {
   if (!navigator.mediaDevices?.enumerateDevices) return [];
@@ -118,16 +87,13 @@ export const startMicrophone: StartCapture = async (deviceId, cb) => {
     throw new MicrophoneError('NOT_FOUND', 'No microphone was found.');
   }
   const context = new AudioContext();
-  const moduleUrl = URL.createObjectURL(new Blob([WORKLET_SOURCE], { type: 'text/javascript' }));
   let stopped = false;
   try {
-    await context.audioWorklet.addModule(moduleUrl);
+    await context.audioWorklet.addModule(WORKLET_URL);
   } catch {
     stream.getTracks().forEach((t) => t.stop());
     await context.close().catch(() => undefined);
     throw new MicrophoneError('UNSUPPORTED', 'This browser cannot process audio for recording. Use an up-to-date Chrome or Edge.');
-  } finally {
-    URL.revokeObjectURL(moduleUrl);
   }
   const source = context.createMediaStreamSource(stream);
   const node = new AudioWorkletNode(context, 'pcm-capture');

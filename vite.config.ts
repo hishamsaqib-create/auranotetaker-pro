@@ -4,15 +4,16 @@ import type { Plugin } from 'vite';
 import { defineConfig } from 'vite';
 
 // Strict Content Security Policy for production builds (docs/deployment.md section 7).
-// Scripts, styles and fonts come only from the app's own origin; the only other host is Base44.
-// Phase 2 adds the chosen speech-to-text provider's streaming endpoint to connect-src.
-const CSP = [
+// Scripts (including the audio worklet), styles and fonts come only from the app's own origin. The other
+// hosts are Base44 and the Speechmatics EU real-time endpoint (lib/speech/speechmatics.ts).
+export const CSP = [
   "default-src 'self'",
   "script-src 'self'",
   "style-src 'self'",
   "img-src 'self' data:",
   "font-src 'self'",
-  "connect-src 'self' https://base44.app wss://base44.app",
+  "connect-src 'self' https://base44.app wss://base44.app wss://eu.rt.speechmatics.com",
+  "media-src 'self'",
   "object-src 'none'",
   "base-uri 'self'",
   "form-action 'self'",
