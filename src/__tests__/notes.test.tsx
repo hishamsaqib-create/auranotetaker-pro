@@ -30,7 +30,7 @@ describe('note writer', () => {
     expect(screen.getByText(/Still to fill in: .*Consent/)).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Copy for Dentally' }));
     expect(copies[0]).toContain('Extraction LR8');
-    expect(await screen.findByText(/^Copied with \d+ blanks still in brackets \(Medical history, Consent, .*Paste it into the notes for Oliver Bennett, born 12 Mar 1986 in Dentally\.$/)).toBeInTheDocument();
+    expect(await screen.findByText(/^Copied with \d+ blanks still in brackets \(Medical history, Medication risks, Consent, .*Paste it into the notes for Oliver Bennett, born 12 Mar 1986 in Dentally\.$/)).toBeInTheDocument();
     const audit = backend.demo!.auditEvents().at(-1)!;
     expect(audit).toMatchObject({ action: 'NOTE_COPIED', details: { templateId: 'starter-extraction', source: 'STANDALONE' } });
     expect(JSON.stringify(audit)).not.toContain('LR8');
