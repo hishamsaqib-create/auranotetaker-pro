@@ -70,6 +70,8 @@ export interface DiaryResponse {
   scribeOutcomes: Record<string, ScribeOutcome>;
   /** The clinic's prediction settings, so the web app and the server predict the same way. */
   predictionOptions: Partial<PredictionOptions>;
+  /** True when transcripts past their deletion time could not be deleted (decision D2a). Shown, never hidden. */
+  retentionCleanupFailed: boolean;
 }
 
 export interface PatientSummaryResponse extends PatientSummary {
@@ -427,6 +429,8 @@ export async function getDiary(ctx: StaffContext, deps: HandlerDeps, input: { pr
     rejectedCount: result.rejectedCount,
     scribeOutcomes: outcomes,
     predictionOptions: predictionOptions(deps),
+    // Every surgery screen refreshes its diary through the day, so expired transcripts go promptly.
+    retentionCleanupFailed: !(await purgeExpiredContent(ctx, deps)),
   };
 }
 
@@ -785,7 +789,7 @@ export interface NurseNoteResponse {
 
 const ACCEPTS_TRANSCRIPT = new Set<ScribeSession['status']>(['RECORDING', 'PAUSED', 'STOPPED']);
 const ACCEPTS_NURSE_NOTES = new Set<ScribeSession['status']>(['READY', 'RECORDING', 'PAUSED', 'STOPPED']);
-const PURGE_BATCH = 200;
+const PURGE_BATCH = 5_000;
 export const CONTENT_VIEW_AUDIT_WINDOW_MS = 15 * 60_000;
 
 const segmentContext = (clinicId: string, sessionId: string, segmentId: string) => `transcript:${clinicId}:${sessionId}:${segmentId}`;
@@ -925,6 +929,7 @@ export async function saveTranscript(
   const deleteAfterMs = contentDeleteAfterMs(now, deps.clinic.timeZone);
   const stored = await Promise.all(
     checked.value.map(async (seg) => ({
+      kind: seg.kind,
       segmentId: seg.segmentId,
       seq: seg.seq,
       startMs: seg.startMs,
@@ -936,7 +941,20 @@ export async function saveTranscript(
       deleteAfterMs,
     })),
   );
-  return { saved: await deps.content.addSegments(ctx.clinicId, s.sessionId, stored) };
+  const saved = await deps.content.addSegments(ctx.clinicId, s.sessionId, stored);
+  await deleteIfPermissionEnded(ctx, deps, s.sessionId);
+  return { saved };
+}
+
+/**
+ * A save can race a withdrawal: the save checked permission, then the withdrawal deleted the session's
+ * content, then the save wrote its rows. So after writing, check again and delete if permission has ended.
+ */
+async function deleteIfPermissionEnded(ctx: StaffContext, deps: HandlerDeps, sessionId: string): Promise<void> {
+  const now = await loadSession(ctx, deps, sessionId);
+  if (now.consent.status === 'GIVEN' && !isTerminal(now.status)) return;
+  await deleteSessionContent(ctx, deps, now, now.consent.status === 'GIVEN' ? 'SESSION_CLOSED' : 'CONSENT_WITHDRAWN');
+  throw new AppError('SESSION_TRANSITION_REFUSED', 'Permission for this appointment has ended, so nothing more is kept.');
 }
 
 /** The session's transcript and nurse notes so far, for the scribe screen after a refresh. */
@@ -954,6 +972,7 @@ export async function getScribeContent(
     segments = orderSegments(
       await Promise.all(
         (await deps.content.listSegments(ctx.clinicId, s.sessionId)).map(async (r) => ({
+          kind: r.kind,
           segmentId: r.segmentId,
           seq: r.seq,
           startMs: r.startMs,
@@ -1024,10 +1043,11 @@ export async function saveNurseNote(
     );
   } catch (err) {
     if (err instanceof VersionConflictError) {
-      throw new AppError('VERSION_CONFLICT', 'The nurse notes were changed on another screen. Reload them before typing more.');
+      throw new AppError('VERSION_CONFLICT', 'The nurse notes were changed on another screen. Load the latest notes before typing more.');
     }
     throw err;
   }
+  await deleteIfPermissionEnded(ctx, deps, s.sessionId);
   return { nurseNote: note };
 }
 

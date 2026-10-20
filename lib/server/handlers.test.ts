@@ -511,6 +511,7 @@ describe('clinic setup', () => {
 describe('scribe capture', () => {
   const at = { surgeryId: 'surgery-1' };
   const line = (n: number, text = `Line ${n} about the lower left six.`) => ({
+    kind: 'SPEECH' as const,
     segmentId: `segment-${String(n).padStart(4, '0')}`,
     seq: n,
     startMs: n * 1000,
@@ -676,7 +677,7 @@ describe('scribe capture', () => {
   it('deletes content past its time when recording starts, and warns if that fails', async () => {
     const d = deps();
     await d.content.addSegments(CLINIC, 'old-session', [
-      { segmentId: 'old-segment-1', seq: 1, startMs: 0, endMs: 1, speaker: null, cipherText: 'v1.x.y', capturedBy: 'n', savedAtMs: NOW - 3 * DAY_MS, deleteAfterMs: NOW - DAY_MS },
+      { kind: 'SPEECH', segmentId: 'old-segment-1', seq: 1, startMs: 0, endMs: 1, speaker: null, cipherText: 'v1.x.y', capturedBy: 'n', savedAtMs: NOW - 3 * DAY_MS, deleteAfterMs: NOW - DAY_MS },
     ]);
     const s = await readySession(d);
     const r = await changeRecording(nurse, d, { sessionId: s.sessionId, action: 'START', expectedVersion: s.version, ...at });
@@ -700,5 +701,47 @@ describe('scribe capture', () => {
     const err = await changeRecording(nurse, d, { sessionId: s.sessionId, action: 'START', expectedVersion: s.version, ...at }).then(() => null, (e) => e);
     expect(err).toBeInstanceOf(AppError);
     expect(['NOT_TODAY', 'SESSION_EXPIRED']).toContain((err as AppError).code);
+  });
+
+  it('deletes transcript that lands after a withdrawal raced the save', async () => {
+    const d = deps();
+    const s = await recordingSession(d);
+    const realAdd = d.content.addSegments.bind(d.content);
+    let raced = false;
+    d.content.addSegments = async (clinicId, sessionId, list) => {
+      if (!raced) {
+        // The withdrawal is recorded after the save checked permission but before its rows are written.
+        raced = true;
+        const current = (await sessions.get(CLINIC, s.sessionId))!;
+        await recordConsent(nurse, d, { sessionId: s.sessionId, given: false, expectedVersion: current.version, ...at });
+      }
+      return realAdd(clinicId, sessionId, list);
+    };
+    await expectAppError(saveTranscript(nurse, d, { sessionId: s.sessionId, segments: [line(1)], ...at }), 'SESSION_TRANSITION_REFUSED');
+    expect(await d.content.listSegments(CLINIC, s.sessionId)).toEqual([]);
+  });
+
+  it('keeps gap markers with the transcript', async () => {
+    const d = deps();
+    const s = await recordingSession(d);
+    await saveTranscript(nurse, d, {
+      sessionId: s.sessionId,
+      segments: [line(1), { ...line(2, 'Speech may be missing here: the microphone stopped.'), kind: 'GAP', speaker: null }],
+      ...at,
+    });
+    const c = await getScribeContent(nurse, d, { sessionId: s.sessionId, ...at });
+    expect(c.segments.map((x) => x.kind)).toEqual(['SPEECH', 'GAP']);
+  });
+
+  it('deletes expired content whenever a diary is read, and says when it could not', async () => {
+    const d = deps();
+    await d.content.addSegments(CLINIC, 'old-session', [
+      { kind: 'SPEECH', segmentId: 'old-segment-2', seq: 1, startMs: 0, endMs: 1, speaker: null, cipherText: 'v1.x.y', capturedBy: 'n', savedAtMs: NOW - 3 * DAY_MS, deleteAfterMs: NOW - DAY_MS },
+    ]);
+    const r = await getDiary(nurse, d, { practitionerId: 'DEMO-PR1' });
+    expect(r.retentionCleanupFailed).toBe(false);
+    expect(await d.content.listSegments(CLINIC, 'old-session')).toEqual([]);
+    const failing = { ...d, content: Object.assign(Object.create(Object.getPrototypeOf(d.content)), d.content, { purgeExpired: async () => Promise.reject(new Error('down')) }) } as HandlerDeps;
+    expect((await getDiary(nurse, failing, { practitionerId: 'DEMO-PR1' })).retentionCleanupFailed).toBe(true);
   });
 });

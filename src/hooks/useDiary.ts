@@ -21,6 +21,8 @@ export interface DiaryState {
   predictionOptions: Partial<PredictionOptions>;
   /** Server time minus this computer's time, measured at the last successful fetch. Null until known. */
   clockOffsetMs: number | null;
+  /** The server could not delete transcripts past their deletion time. */
+  retentionCleanupFailed: boolean;
   loading: boolean;
   error: BackendError | null;
   /** Time (this computer's clock) of the last successful fetch. */
@@ -35,6 +37,7 @@ const empty = (practitionerId: string | null): DiaryState => ({
   scribeOutcomes: {},
   predictionOptions: {},
   clockOffsetMs: null,
+  retentionCleanupFailed: false,
   loading: practitionerId !== null,
   error: null,
   lastOkAt: null,
@@ -72,6 +75,7 @@ export function useDiary(backend: AppBackend, practitionerId: string | null, clo
           timeZone: res.timeZone,
           rejectedCount: res.rejectedCount + (res.appointments.length - appointments.length),
           scribeOutcomes: res.scribeOutcomes ?? {},
+          retentionCleanupFailed: res.retentionCleanupFailed === true,
           predictionOptions: res.predictionOptions ?? {},
           // The server read its clock somewhere between sending and receiving; the midpoint is the best estimate.
           clockOffsetMs: Number.isFinite(serverMs) ? Math.round(serverMs - (sentAt + receivedAt) / 2) : null,

@@ -20,6 +20,9 @@ export function useNurseNote(o: { backend: AppBackend; sessionId: string; surger
   const revision = useRef(0);
   const savedText = useRef('');
   const inFlight = useRef(false);
+  const inFlightPromise = useRef<Promise<void> | null>(null);
+  /** While permission is being withdrawn nothing more is sent. */
+  const held = useRef(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const optsRef = useRef(o);
   optsRef.current = o;
@@ -27,6 +30,7 @@ export function useNurseNote(o: { backend: AppBackend; sessionId: string; surger
 
   const load = useCallback((note: NurseNote | null) => {
     if (timer.current) clearTimeout(timer.current);
+    held.current = false;
     revision.current = note?.revision ?? 0;
     savedText.current = note?.text ?? '';
     textRef.current = savedText.current;
@@ -35,8 +39,8 @@ export function useNurseNote(o: { backend: AppBackend; sessionId: string; surger
     setMessage(null);
   }, []);
 
-  const save = useCallback(async () => {
-    if (inFlight.current || textRef.current === savedText.current) return;
+  const saveOnce = useCallback(async () => {
+    if (held.current || inFlight.current || textRef.current === savedText.current) return;
     inFlight.current = true;
     const sending = textRef.current;
     if (alive.current) setStatus('saving');
@@ -58,7 +62,46 @@ export function useNurseNote(o: { backend: AppBackend; sessionId: string; surger
       return;
     }
     inFlight.current = false;
-    if (textRef.current !== savedText.current) void save();
+    if (textRef.current !== savedText.current) await saveOnce();
+  }, []);
+
+  const save = useCallback(() => {
+    if (!inFlightPromise.current) {
+      inFlightPromise.current = saveOnce().finally(() => {
+        inFlightPromise.current = null;
+      });
+    }
+    return inFlightPromise.current;
+  }, [saveOnce]);
+
+  /** Another screen saved first: take its notes and keep what was typed here underneath, unsaved. */
+  const mergeLatest = useCallback((latest: NurseNote | null) => {
+    const mine = textRef.current;
+    const theirs = latest?.text ?? '';
+    revision.current = latest?.revision ?? 0;
+    savedText.current = theirs;
+    const merged = mine && mine !== theirs && !theirs.includes(mine) ? `${theirs}${theirs ? '\n\n' : ''}${mine}` : theirs;
+    textRef.current = merged;
+    setTextState(merged);
+    setMessage(null);
+    setStatus(merged === theirs ? 'saved' : 'unsaved');
+    if (merged !== theirs) void save();
+  }, [save]);
+
+  /** Loading failed: let typing continue; the first save will say if notes already exist. */
+  const loadFailed = useCallback(() => {
+    setStatus((s) => (s === 'loading' ? 'saved' : s));
+  }, []);
+
+  /** Before a withdrawal: stop saving and wait for a save already under way. */
+  const hold = useCallback(async () => {
+    held.current = true;
+    if (timer.current) clearTimeout(timer.current);
+    await inFlightPromise.current;
+  }, []);
+
+  const release = useCallback(() => {
+    held.current = false;
   }, []);
 
   const setText = useCallback(
@@ -89,5 +132,5 @@ export function useNurseNote(o: { backend: AppBackend; sessionId: string; surger
     };
   }, [save]);
 
-  return { text, setText, status, message, load, saveNow: save };
+  return { text, setText, status, message, load, mergeLatest, loadFailed, hold, release, saveNow: save };
 }

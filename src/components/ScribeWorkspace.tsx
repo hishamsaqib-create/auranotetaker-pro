@@ -29,8 +29,8 @@ export interface ScribeWorkspaceProps {
   /** "Oliver", or "the patient" when the name is not loaded. */
   firstName: string;
   onSessionChange: (s: ScribeSession) => void;
-  /** Records the patient's withdrawal (the server deletes everything captured). */
-  onWithdraw: () => Promise<void>;
+  /** Records the patient's withdrawal (the server deletes everything captured). Resolves true when recorded. */
+  onWithdraw: () => Promise<boolean>;
   /** Ends a session before anything is recorded. */
   onCancel: () => void;
   // Injected in tests; real devices otherwise.
@@ -99,30 +99,52 @@ export function ScribeWorkspace(p: ScribeWorkspaceProps) {
   });
   const notes = useNurseNote({ backend: p.backend, sessionId: s.sessionId, surgeryId: p.surgeryId });
   const { restore } = scribe;
-  const { load } = notes;
+  const { load, loadFailed } = notes;
 
   // What was saved before this screen opened (after a page reload, or nurse notes typed before recording).
+  // Recording is only offered once this has loaded, so new lines always follow the saved ones.
+  const [loadAttempt, setLoadAttempt] = useState(0);
   useEffect(() => {
     let cancelled = false;
+    setLoadError(null);
     p.backend
       .getScribeContent(s.sessionId, p.surgeryId)
       .then((c) => {
         if (cancelled) return;
         restore(
-          c.segments.map((x) => ({ key: x.segmentId, kind: 'speech' as const, speaker: x.speaker, text: x.text, startMs: x.startMs, saved: true })),
+          c.segments.map((x) => ({
+            key: x.segmentId,
+            kind: x.kind === 'GAP' ? ('gap' as const) : ('speech' as const),
+            speaker: x.speaker,
+            text: x.text,
+            startMs: x.startMs,
+            endMs: x.endMs,
+            saved: true,
+          })),
           c.segments.reduce((m, x) => Math.max(m, x.seq), 0),
         );
         load(c.nurseNote);
       })
       .catch((err: unknown) => {
-        if (!cancelled) setLoadError(err instanceof Error ? err.message : 'The transcript so far could not be loaded.');
+        if (cancelled) return;
+        setLoadError(err instanceof Error ? err.message : 'The transcript so far could not be loaded.');
+        loadFailed();
       });
     return () => {
       cancelled = true;
     };
-    // Load once per session.
+    // Load once per session, and again on "Try again".
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [s.sessionId]);
+  }, [s.sessionId, loadAttempt]);
+
+  async function loadLatestNotes() {
+    try {
+      const c = await p.backend.getScribeContent(s.sessionId, p.surgeryId);
+      notes.mergeLatest(c.nurseNote);
+    } catch (err) {
+      setLoadError(err instanceof Error ? err.message : 'The latest notes could not be loaded.');
+    }
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -139,7 +161,9 @@ export function ScribeWorkspace(p: ScribeWorkspaceProps) {
   const serverRecording = s.status === 'RECORDING';
   const statusText =
     st.phase === 'live'
-      ? 'Recording'
+      ? st.silentMicrophone
+        ? 'No sound from microphone'
+        : 'Recording'
       : st.phase === 'connecting'
         ? 'Starting…'
         : st.phase === 'reconnecting'
@@ -153,18 +177,25 @@ export function ScribeWorkspace(p: ScribeWorkspaceProps) {
                 : s.status === 'STOPPED'
                   ? 'Stopped'
                   : 'Not recording';
-  const statusTone = st.phase === 'live' ? 'live' : st.phase === 'reconnecting' || (serverRecording && !capturing) ? 'alert' : 'off';
+  const statusTone =
+    st.phase === 'live' && !st.silentMicrophone ? 'live' : st.phase === 'reconnecting' || st.silentMicrophone || (serverRecording && !capturing) ? 'alert' : 'off';
+  const canRecord = st.restored && !st.busy && !withdrawing;
 
   async function withdraw() {
     setWithdrawing(true);
-    await scribe.abandon();
-    notes.load(null);
-    try {
-      await p.onWithdraw();
-    } finally {
-      setWithdrawing(false);
-      setConfirmWithdraw(false);
+    // Stop capture and let any save already under way finish, so nothing arrives after the withdrawal.
+    await Promise.all([scribe.prepareWithdrawal(), notes.hold()]);
+    const recorded = await p.onWithdraw();
+    if (recorded) {
+      scribe.completeWithdrawal();
+      notes.load(null);
+    } else {
+      // Not recorded (the panel shows why): nothing was deleted, so carry on as before.
+      scribe.cancelWithdrawal();
+      notes.release();
     }
+    setWithdrawing(false);
+    setConfirmWithdraw(false);
   }
 
   return (
@@ -204,17 +235,17 @@ export function ScribeWorkspace(p: ScribeWorkspaceProps) {
         </label>
         <div className="record-actions">
           {s.status === 'READY' && (
-            <button type="button" className="button button-record" disabled={st.busy} onClick={() => void scribe.start()}>
+            <button type="button" className="button button-record" disabled={!canRecord} onClick={() => void scribe.start()}>
               Start recording
             </button>
           )}
           {serverRecording && !capturing && st.phase !== 'finishing' && (
-            <button type="button" className="button button-record" disabled={st.busy} onClick={() => void scribe.start()}>
+            <button type="button" className="button button-record" disabled={!canRecord} onClick={() => void scribe.start()}>
               Continue recording
             </button>
           )}
           {(s.status === 'PAUSED' || s.status === 'STOPPED') && (
-            <button type="button" className="button button-record" disabled={st.busy} onClick={() => void scribe.start()}>
+            <button type="button" className="button button-record" disabled={!canRecord} onClick={() => void scribe.start()}>
               Resume recording
             </button>
           )}
@@ -238,7 +269,19 @@ export function ScribeWorkspace(p: ScribeWorkspaceProps) {
 
       {st.problem && <Notice tone={statusTone === 'alert' ? 'bad' : 'warn'} title={st.problem} />}
       {st.saveProblem && <Notice tone="bad" title={st.saveProblem} />}
-      {loadError && <Notice tone="bad" title={loadError} />}
+      {loadError && (
+        <Notice
+          tone="bad"
+          title={loadError}
+          action={
+            <button type="button" className="button button-secondary" onClick={() => setLoadAttempt((n) => n + 1)}>
+              Try again
+            </button>
+          }
+        >
+          Recording waits until the transcript so far has loaded, so nothing gets out of order.
+        </Notice>
+      )}
       {warning && <Notice tone="warn" title={warning} />}
       {s.status === 'STOPPED' && (
         <Notice tone="info" title="Recording stopped.">
@@ -279,7 +322,19 @@ export function ScribeWorkspace(p: ScribeWorkspaceProps) {
             placeholder="Shade, materials, batch numbers, anything said off-mic…"
             onChange={(e) => notes.setText(e.target.value)}
           />
-          {notes.message && <Notice tone="bad" title={notes.message} />}
+          {notes.message && (
+            <Notice
+              tone="bad"
+              title={notes.message}
+              action={
+                notes.status === 'conflict' ? (
+                  <button type="button" className="button button-secondary" onClick={() => void loadLatestNotes()}>
+                    Load the latest notes
+                  </button>
+                ) : undefined
+              }
+            />
+          )}
         </section>
       </div>
 

@@ -8,6 +8,7 @@
   "properties": {
     "clinic_id": { "type": "string" },
     "session_id": { "type": "string" },
+    "kind": { "type": "string", "enum": ["SPEECH", "GAP"], "description": "GAP marks where speech may be missing" },
     "segment_id": { "type": "string", "maxLength": 64, "description": "Made by the scribe screen; a retried save stores it once" },
     "seq": { "type": "integer", "minimum": 1 },
     "start_ms": { "type": "integer", "minimum": 0, "description": "Offset into the recording" },
@@ -18,6 +19,6 @@
     "saved_at": { "type": "string", "format": "date-time" },
     "delete_after": { "type": "string", "format": "date-time" }
   },
-  "required": ["clinic_id", "session_id", "segment_id", "seq", "start_ms", "end_ms", "cipher_text", "captured_by_email", "saved_at", "delete_after"],
+  "required": ["clinic_id", "session_id", "kind", "segment_id", "seq", "start_ms", "end_ms", "cipher_text", "captured_by_email", "saved_at", "delete_after"],
   "rls": { "create": false, "read": false, "update": false, "delete": false }
 }

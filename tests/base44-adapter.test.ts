@@ -68,6 +68,10 @@ class FakeEntity {
     this.rows = this.rows.filter((r) => r.id !== id);
   }
 
+  async deleteMany(query: Query): Promise<void> {
+    this.rows = this.rows.filter((r) => !matches(r, query));
+  }
+
   async updateMany(query: Query, data: Record<string, Record<string, unknown>>): Promise<{ updated: number }> {
     const hit = this.rows.filter((r) => matches(r, query));
     for (const r of hit) Object.assign(r, structuredClone(data.$set));
@@ -247,6 +251,7 @@ describe('Base44 caller and directory', () => {
 
 describe('Base44ScribeContentStore', () => {
   const seg = (id: string, seq: number, deleteAfterMs = T + 86_400_000) => ({
+    kind: 'SPEECH' as const,
     segmentId: id,
     seq,
     startMs: seq * 1000,

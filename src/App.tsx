@@ -257,6 +257,11 @@ function Workspace({ backend, user, clock, onSignOut }: { backend: AppBackend; u
             {sessionCheckError}
           </Notice>
         )}
+        {diary.retentionCleanupFailed && (
+          <Notice tone="warn" title="Old transcripts could not be deleted">
+            Transcripts and nurse notes past their deletion date are still stored. Please tell the practice manager.
+          </Notice>
+        )}
         {Math.abs(offset) > CLOCK_SKEW_WARNING_MS && (
           <Notice tone="warn" title={`This computer's clock is ${skewMinutes} minutes ${offset > 0 ? 'slow' : 'fast'}`}>
             AuraNoteTaker is using the correct time from its server. Ask whoever looks after the practice's computers to correct this clock.

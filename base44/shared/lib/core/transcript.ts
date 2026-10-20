@@ -9,8 +9,15 @@
 
 import { zonedDateString } from './time.ts';
 
+/**
+ * SPEECH is transcribed speech. GAP records that speech may be missing at that point (a dropped connection,
+ * a microphone that stopped, a reload). Gaps are stored like speech so the note step and reviewers see them.
+ */
+export type SegmentKind = 'SPEECH' | 'GAP';
+
 /** One finished piece of transcript, as sent by the scribe screen. Times are offsets into the recording. */
 export interface TranscriptSegmentInput {
+  kind: SegmentKind;
   /** Made by the screen (random). Saving the same ID twice stores it once. */
   segmentId: string;
   /** Order within the session, counting from 1. */
@@ -60,6 +67,7 @@ export function validateSegments(raw: unknown): ValidationResult<TranscriptSegme
     const s = item as Record<string, unknown>;
     if (typeof s.segmentId !== 'string' || !SEGMENT_ID.test(s.segmentId)) return { ok: false, message: 'A transcript segment has no valid ID.' };
     if (seen.has(s.segmentId)) return { ok: false, message: 'A transcript segment was sent twice.' };
+    if (s.kind !== 'SPEECH' && s.kind !== 'GAP') return { ok: false, message: 'A transcript segment has an unknown kind.' };
     if (!isInt(s.seq, 1, 1_000_000)) return { ok: false, message: 'A transcript segment is out of order.' };
     if (!isInt(s.startMs, 0, MAX_OFFSET_MS) || !isInt(s.endMs, 0, MAX_OFFSET_MS) || s.endMs < s.startMs) {
       return { ok: false, message: 'A transcript segment has invalid times.' };
@@ -71,7 +79,7 @@ export function validateSegments(raw: unknown): ValidationResult<TranscriptSegme
       return { ok: false, message: 'A transcript segment has invalid text.' };
     }
     seen.add(s.segmentId);
-    out.push({ segmentId: s.segmentId, seq: s.seq, startMs: s.startMs, endMs: s.endMs, speaker: s.speaker, text: s.text });
+    out.push({ kind: s.kind, segmentId: s.segmentId, seq: s.seq, startMs: s.startMs, endMs: s.endMs, speaker: s.speaker, text: s.text });
   }
   return { ok: true, value: out };
 }

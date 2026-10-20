@@ -56,6 +56,7 @@ function diaryResponse(appointments: DiaryAppointment[], fetchedAtMs = NOW): Dia
     rejectedCount: 0,
     scribeOutcomes: {},
     predictionOptions: { earlyStartMinutes: 10, overrunMinutes: 30 },
+    retentionCleanupFailed: false,
   };
 }
 

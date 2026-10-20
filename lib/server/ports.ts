@@ -113,6 +113,7 @@ export interface AuditSink {
 
 /** A transcript segment as stored: the text is encrypted (see cipher.ts), everything else is plain. */
 export interface StoredSegment {
+  kind: 'SPEECH' | 'GAP';
   segmentId: string;
   seq: number;
   startMs: number;

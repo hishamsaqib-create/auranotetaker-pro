@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import type { TranscriptSegmentInput } from './transcript.ts';
 import { contentDeleteAfterMs, MAX_SEGMENTS_PER_SAVE, orderSegments, validateNurseNoteText, validateSegments } from './transcript.ts';
 
-const seg = (o: Record<string, unknown> = {}) => ({ segmentId: 'abcdefgh-1', seq: 1, startMs: 0, endMs: 1200, speaker: 'S1', text: 'Lower left six.', ...o });
+const seg = (o: Record<string, unknown> = {}) => ({ kind: 'SPEECH' as const, segmentId: 'abcdefgh-1', seq: 1, startMs: 0, endMs: 1200, speaker: 'S1', text: 'Lower left six.', ...o }) as TranscriptSegmentInput;
 
 describe('validateSegments', () => {
   it('accepts well-formed segments, including an unknown speaker', () => {
@@ -15,6 +16,7 @@ describe('validateSegments', () => {
     ['bad ID', [seg({ segmentId: 'x' })]],
     ['repeated ID', [seg(), seg()]],
     ['zero seq', [seg({ seq: 0 })]],
+    ['unknown kind', [seg({ kind: 'NOTE' })]],
     ['end before start', [seg({ startMs: 500, endMs: 100 })]],
     ['speaker that looks like a name', [seg({ speaker: 'Oliver Bennett' })]],
     ['blank text', [seg({ text: '   ' })]],

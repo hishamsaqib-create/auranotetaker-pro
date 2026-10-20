@@ -209,7 +209,16 @@ export function SessionPanel(p: SessionPanelProps) {
               timeZone={p.timeZone}
               firstName={first}
               onSessionChange={p.onSessionChange}
-              onWithdraw={() => act(() => p.backend.recordConsent(s.sessionId, false, s.version, p.currentSurgeryId))}
+              onWithdraw={async () => {
+                let recorded = false;
+                await act(
+                  () => p.backend.recordConsent(s.sessionId, false, s.version, p.currentSurgeryId),
+                  () => {
+                    recorded = true;
+                  },
+                );
+                return recorded;
+              }}
               onCancel={cancel}
               {...p.scribeDevices}
             />

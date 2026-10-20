@@ -59,6 +59,7 @@ interface EntityApi {
   update(id: string, data: Record<string, unknown>): Promise<Row>;
   updateMany(query: Record<string, unknown>, data: Record<string, Record<string, unknown>>): Promise<{ updated?: number } | null>;
   delete(id: string): Promise<unknown>;
+  deleteMany(query: Record<string, unknown>): Promise<unknown>;
 }
 export interface Base44Like {
   auth: { me(): Promise<{ email?: string | null; full_name?: string | null; role?: string | null } | null> };
@@ -543,13 +544,14 @@ function rowToSegment(r: Row): StoredSegment {
   const savedAtMs = isoToMs(r.saved_at);
   const deleteAfterMs = isoToMs(r.delete_after);
   const speaker = r.speaker === undefined || r.speaker === null ? null : str(r.speaker);
+  const kind = r.kind === 'SPEECH' || r.kind === 'GAP' ? r.kind : null;
   if (
-    !segmentId || !SEGMENT_ID.test(segmentId) || seq === null || startMs === null || endMs === null || !cipherText || !capturedBy ||
+    !kind || !segmentId || !SEGMENT_ID.test(segmentId) || seq === null || startMs === null || endMs === null || !cipherText || !capturedBy ||
     savedAtMs === null || deleteAfterMs === null || (speaker !== null && !SPEAKER.test(speaker))
   ) {
     throw new AppError('INTERNAL', UNREADABLE);
   }
-  return { segmentId, seq, startMs, endMs, speaker, cipherText, capturedBy, savedAtMs, deleteAfterMs };
+  return { kind, segmentId, seq, startMs, endMs, speaker, cipherText, capturedBy, savedAtMs, deleteAfterMs };
 }
 
 export class Base44ScribeContentStore implements ScribeContentStore {
@@ -568,13 +570,20 @@ export class Base44ScribeContentStore implements ScribeContentStore {
   }
 
   async addSegments(clinicId: string, sessionId: string, list: readonly StoredSegment[]): Promise<number> {
-    const existing = new Set((await this.listSegments(clinicId, sessionId)).map((s) => s.segmentId));
+    if (list.length === 0) return 0;
+    // Only the incoming IDs are checked, so a save costs the same early and late in a long appointment.
+    const existing = new Set(
+      (await allRows(this.segments, { clinic_id: clinicId, session_id: sessionId, segment_id: { $in: list.map((s) => s.segmentId) } })).map((r) =>
+        str(r.segment_id),
+      ),
+    );
     let added = 0;
     for (const s of list) {
       if (existing.has(s.segmentId)) continue;
       await this.segments.create(compact({
         clinic_id: clinicId,
         session_id: sessionId,
+        kind: s.kind,
         segment_id: s.segmentId,
         seq: s.seq,
         start_ms: s.startMs,
@@ -622,13 +631,16 @@ export class Base44ScribeContentStore implements ScribeContentStore {
     };
     if (expectedRevision === 0) {
       if ((await this.noteRows(clinicId, sessionId)).length > 0) throw new VersionConflictError();
-      await this.notes.create(row);
-      // Two first saves at the same moment: keep the earliest, refuse the other.
-      const after = await allRows(this.notes, { clinic_id: clinicId, session_id: sessionId });
-      if (after.length > 1) {
-        const mine = after.find((r) => r.cipher_text === note.cipherText);
-        if (mine?.id) await this.notes.delete(mine.id);
-        throw new VersionConflictError();
+      const mine = await this.notes.create(row);
+      // Two first saves at the same moment: the earliest stored wins, the other is removed and refused.
+      const all = await allRows(this.notes, { clinic_id: clinicId, session_id: sessionId });
+      if (all.length > 1) {
+        const order = (r: Row) => `${str(r.created_date) ?? ''}|${r.id ?? ''}`;
+        const first = [...all].sort((a, b) => (order(a) < order(b) ? -1 : 1))[0];
+        if (first?.id !== mine.id) {
+          if (mine.id) await this.notes.delete(mine.id);
+          throw new VersionConflictError();
+        }
       }
       return;
     }
@@ -636,31 +648,36 @@ export class Base44ScribeContentStore implements ScribeContentStore {
     if (!result || result.updated !== 1) throw new VersionConflictError();
   }
 
-  async deleteSession(clinicId: string, sessionId: string): Promise<number> {
-    let count = 0;
-    for (const entity of [this.segments, this.notes]) {
-      for (const r of await allRows(entity, { clinic_id: clinicId, session_id: sessionId })) {
-        if (!r.id) throw new AppError('INTERNAL', UNREADABLE);
-        await entity.delete(r.id);
-        count += 1;
-      }
+  /** Deletes every row matching the query and checks none is left. Returns how many there were. */
+  private async deleteAll(entity: EntityApi, query: Record<string, unknown>, limit = Number.POSITIVE_INFINITY): Promise<number> {
+    const found = rows(await entity.filter(query, { limit: 1 }));
+    if (found.length === 0) return 0;
+    const before = await allRows(entity, query);
+    if (before.length <= limit) {
+      await entity.deleteMany(query);
+      if (rows(await entity.filter(query, { limit: 1 })).length === 0) return before.length;
     }
+    // Bulk delete unavailable, partial, or over the limit: one at a time, then check again.
+    let count = 0;
+    for (const r of before) {
+      if (count >= limit) break;
+      if (!r.id) throw new AppError('INTERNAL', UNREADABLE);
+      await entity.delete(r.id);
+      count += 1;
+    }
+    if (count < limit && rows(await entity.filter(query, { limit: 1 })).length > 0) throw new AppError('INTERNAL', UNREADABLE);
     return count;
   }
 
+  async deleteSession(clinicId: string, sessionId: string): Promise<number> {
+    const query = { clinic_id: clinicId, session_id: sessionId };
+    return (await this.deleteAll(this.segments, query)) + (await this.deleteAll(this.notes, query));
+  }
+
   async purgeExpired(clinicId: string, nowMs: number, limit: number): Promise<number> {
-    let count = 0;
     const query = { clinic_id: clinicId, delete_after: { $lte: new Date(nowMs).toISOString() } };
-    for (const entity of [this.segments, this.notes]) {
-      const page = rows(await entity.filter(query, { limit: Math.max(1, limit - count) }));
-      for (const r of page) {
-        if (count >= limit) return count;
-        if (!r.id) throw new AppError('INTERNAL', UNREADABLE);
-        await entity.delete(r.id);
-        count += 1;
-      }
-    }
-    return count;
+    const segments = await this.deleteAll(this.segments, query, limit);
+    return segments + (await this.deleteAll(this.notes, query, Math.max(0, limit - segments)));
   }
 }
 

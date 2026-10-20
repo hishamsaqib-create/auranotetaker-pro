@@ -110,6 +110,8 @@ Backend secrets (Base44 secret vault):
 | `CLINIC_KEY` | 1 | The one clinic this app serves (matches `Clinic.slug`). Callers must have an active StaffProfile in it |
 | `SPEECHMATICS_API_KEY` | 2 | Long-lived key. Functions swap it for a one-minute browser key (`getSpeechToken`); it never reaches the browser |
 | `CONTENT_ENCRYPTION_KEY` | 2 | AES-256-GCM key for transcripts and nurse notes held in Base44 (D2a). Base64 of 32 random bytes |
+
+Retention (D2a): expired transcripts and nurse notes are deleted whenever any surgery screen refreshes its diary and when a recording starts; a failure is shown on screen. A Base44 scheduled job is still to be added, so content is also deleted on days nobody opens the app.
 | `LLM_*` / AWS role | 3 | Bedrock access pinned to one region, per D3 |
 | `GOOGLE_DRIVE_*` | 5 | Non-patient knowledge export |
 

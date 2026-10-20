@@ -16,8 +16,11 @@ export interface TranscriberEvents {
 
 export interface Transcriber {
   sendAudio(pcm: Int16Array): void;
-  /** Sends end of audio and waits (up to a few seconds) for the last finished transcript. */
-  finish(): Promise<void>;
+  /**
+   * Sends end of audio and waits (up to a few seconds) for the last finished transcript.
+   * Resolves false when the end could not be confirmed, so the screen can mark that words may be missing.
+   */
+  finish(): Promise<boolean>;
   /** Closes at once. Anything not yet transcribed is dropped (used when permission is withdrawn). */
   close(): void;
 }
@@ -40,6 +43,7 @@ export function connectSpeechmatics(url: string, events: TranscriberEvents): Tra
   let sent = 0;
   const queue: Int16Array[] = [];
   let endResolve: (() => void) | null = null;
+  let endConfirmed: (() => void) | null = null;
 
   const fail = (reason: string, retryable: boolean) => {
     if (failed || finished) return;
@@ -79,6 +83,7 @@ export function connectSpeechmatics(url: string, events: TranscriberEvents): Tra
         events.onPartial('');
         break;
       case 'end':
+        endConfirmed?.();
         endResolve?.();
         break;
       case 'error':
@@ -105,20 +110,29 @@ export function connectSpeechmatics(url: string, events: TranscriberEvents): Tra
       if (ws.readyState === WebSocket.OPEN) send(pcm);
     },
     async finish() {
-      if (finished || failed) return;
+      if (failed) return false;
+      if (finished) return true;
       if (!ready || ws.readyState !== WebSocket.OPEN) {
+        // Audio was waiting for a connection that never became ready: it was not transcribed.
+        const lost = queue.length > 0;
         finished = true;
+        queue.length = 0;
         ws.close();
-        return;
+        return !lost;
       }
+      let confirmed = false;
       const done = new Promise<void>((resolve) => {
         endResolve = resolve;
       });
+      endConfirmed = () => {
+        confirmed = true;
+      };
       ending = true;
       ws.send(JSON.stringify(endOfStreamMessage(sent)));
       await Promise.race([done, new Promise((r) => setTimeout(r, FINISH_TIMEOUT_MS))]);
       finished = true;
       ws.close();
+      return confirmed;
     },
     close() {
       finished = true;
@@ -175,6 +189,7 @@ export function startDemoTranscriber(events: TranscriberEvents): Transcriber {
     },
     async finish() {
       stop();
+      return true;
     },
     close: stop,
   };
