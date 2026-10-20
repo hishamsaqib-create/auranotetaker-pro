@@ -273,6 +273,9 @@ describe('AuraNoteTaker main clinical screen (demo mode)', () => {
     await user.click(emma);
     await user.click(screen.getByRole('button', { name: 'Save clinicians' }));
     expect(await screen.findByText('Clinicians saved.')).toBeInTheDocument();
+    // Switched off: hidden from the list until asked for.
+    expect(screen.queryByRole('checkbox', { name: /Emma Reid/ })).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: /Show 1 switched-off or inactive practitioner/ }));
     expect(screen.getByRole('checkbox', { name: /Emma Reid/ })).not.toBeChecked();
 
     await user.type(screen.getByLabelText('Email (their Base44 sign-in)'), 'new.nurse@demo.invalid');

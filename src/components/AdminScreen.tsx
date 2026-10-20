@@ -170,7 +170,7 @@ export function AdminScreen({
               <button type="button" className="link-button" onClick={() => setShowInactive((v) => !v)}>
                 {showInactive
                   ? 'Hide switched-off and inactive practitioners'
-                  : `Show ${setup.dentally.practitioners.filter(isHidden).length} switched-off or inactive practitioners`}
+                  : ((n) => `Show ${n} switched-off or inactive practitioner${n === 1 ? '' : 's'}`)(setup.dentally.practitioners.filter(isHidden).length)}
               </button>
             )}
             <button
