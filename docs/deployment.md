@@ -51,6 +51,8 @@ Demo mode shows a permanent banner and lets you switch scenarios (normal day, do
    | `DENTALLY_BASE_URL` | `https://api.sandbox.dentally.co` for a sandbox key, `https://api.dentally.co` for a live key |
    | `DENTALLY_USER_AGENT` | `AuraNoteTaker/0.1` |
    | `CLINIC_KEY` | `aura` |
+   | `SPEECHMATICS_API_KEY` | Phase 2. An API key from the Speechmatics portal. In the portal, keep **Model Training** switched off |
+   | `CONTENT_ENCRYPTION_KEY` | Phase 2. 32 random bytes, base64. Make one with `openssl rand -base64 32` in Terminal and paste it straight into Base44. Losing or changing it makes stored transcripts unreadable (they are deleted by the next day anyway) |
    ```bash
    npx base44 secrets set DENTALLY_USER_AGENT="AuraNoteTaker/0.1" CLINIC_KEY=aura
    npx base44 secrets list
@@ -106,7 +108,8 @@ Backend secrets (Base44 secret vault):
 | `DENTALLY_BASE_URL` | 1 | Sandbox or production |
 | `DENTALLY_USER_AGENT` | 1 | Mandatory for Dentally |
 | `CLINIC_KEY` | 1 | The one clinic this app serves (matches `Clinic.slug`). Callers must have an active StaffProfile in it |
-| `STT_*` | 2 | Provider credentials, per D3 |
+| `SPEECHMATICS_API_KEY` | 2 | Long-lived key. Functions swap it for a one-minute browser key (`getSpeechToken`); it never reaches the browser |
+| `CONTENT_ENCRYPTION_KEY` | 2 | AES-256-GCM key for transcripts and nurse notes held in Base44 (D2a). Base64 of 32 random bytes |
 | `LLM_*` / AWS role | 3 | Bedrock access pinned to one region, per D3 |
 | `GOOGLE_DRIVE_*` | 5 | Non-patient knowledge export |
 

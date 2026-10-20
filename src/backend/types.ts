@@ -1,6 +1,7 @@
 import type { AuditEvent } from '../../lib/core/audit.ts';
 import type { ConfirmationMethod } from '../../lib/core/session.ts';
 import type { DemoScenario } from '../../lib/dentally/mock.ts';
+import type { TranscriptSegmentInput } from '../../lib/core/transcript.ts';
 import type { PatientSummary } from '../../lib/dentally/types.ts';
 import type {
   ActiveSessionResponse,
@@ -8,9 +9,15 @@ import type {
   ConfirmPatientResponse,
   DiaryResponse,
   MeResponse,
+  NurseNoteResponse,
   PatientSummaryResponse,
+  RecordingAction,
+  RecordingResponse,
+  SaveTranscriptResponse,
+  ScribeContentResponse,
   SessionResponse,
   SetupOptionsResponse,
+  SpeechTokenResponse,
 } from '../../lib/server/handlers.ts';
 
 export type { MeResponse as CurrentUser };
@@ -60,6 +67,11 @@ export interface AppBackend {
   saveClinicians(clinicians: ClinicianChoice[]): Promise<ClinicSetupResponse>;
   saveSurgeries(surgeries: SurgeryChoice[]): Promise<ClinicSetupResponse>;
   saveStaffProfile(profile: StaffProfileInput): Promise<ClinicSetupResponse>;
+  changeRecording(sessionId: string, surgeryId: string, action: RecordingAction, expectedVersion: number): Promise<RecordingResponse>;
+  getSpeechToken(sessionId: string, surgeryId: string): Promise<SpeechTokenResponse>;
+  saveTranscript(sessionId: string, surgeryId: string, segments: TranscriptSegmentInput[]): Promise<SaveTranscriptResponse>;
+  getScribeContent(sessionId: string, surgeryId: string): Promise<ScribeContentResponse>;
+  saveNurseNote(sessionId: string, surgeryId: string, text: string, expectedRevision: number): Promise<NurseNoteResponse>;
   /** Present only in demo mode. */
   readonly demo?: DemoControls;
 }

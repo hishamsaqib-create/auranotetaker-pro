@@ -66,6 +66,10 @@ export const AUDIT_DETAIL_RULES = {
   SESSION_STATUS_CHANGED: { from: status, to: status, reasonCode: isCode },
   INTEGRATION_CHECKED: { integration: oneOf('DENTALLY', 'STT', 'LLM', 'GOOGLE_DRIVE'), result: isCode, latencyMs: isCount },
   ACCESS_DENIED: { operation: isId, reasonCode: isCode },
+  SPEECH_TOKEN_ISSUED: { provider: oneOf('SPEECHMATICS', 'DEMO') },
+  // Transcript and nurse-note text never appears here: only what happened and how many records.
+  SCRIBE_CONTENT_VIEWED: { purpose: oneOf('RESTORE'), segmentCount: isCount, hasNurseNote: isBool },
+  SCRIBE_CONTENT_DELETED: { reasonCode: isCode, count: isCount },
   // Configuration only (clinic, staff profiles, clinicians, surgeries): counts, never names or emails.
   CONFIG_CHANGED: {
     entity: oneOf('CLINIC', 'STAFF_PROFILE', 'CLINICIAN', 'SURGERY'),

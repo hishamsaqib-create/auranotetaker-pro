@@ -12,7 +12,7 @@ import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const SOURCES = ['lib/core', 'lib/dentally', 'lib/server'];
+const SOURCES = ['lib/core', 'lib/dentally', 'lib/server', 'lib/speech'];
 const TARGET = join(root, 'base44/shared/lib');
 const check = process.argv.includes('--check');
 

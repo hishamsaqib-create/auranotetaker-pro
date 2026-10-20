@@ -5,6 +5,7 @@
 import type { AuditEvent } from '../core/audit.ts';
 import type { ScribeSession } from '../core/session.ts';
 import type { DentallyReadService } from '../dentally/types.ts';
+import type { ContentCipher } from './cipher.ts';
 
 export type AppRole = 'SUPER_ADMIN' | 'CLINIC_ADMIN' | 'DENTIST' | 'THERAPIST' | 'HYGIENIST' | 'NURSE' | 'AUDITOR';
 
@@ -110,6 +111,66 @@ export interface AuditSink {
   hasRecent(clinicId: string, actorEmail: string, dedupeKey: string, sinceMs: number): Promise<boolean>;
 }
 
+/** A transcript segment as stored: the text is encrypted (see cipher.ts), everything else is plain. */
+export interface StoredSegment {
+  segmentId: string;
+  seq: number;
+  startMs: number;
+  endMs: number;
+  speaker: string | null;
+  cipherText: string;
+  capturedBy: string;
+  savedAtMs: number;
+  deleteAfterMs: number;
+}
+
+export interface StoredNurseNote {
+  cipherText: string;
+  revision: number;
+  updatedBy: string;
+  updatedAtMs: number;
+  deleteAfterMs: number;
+}
+
+/**
+ * Short-lived clinical content (transcripts and nurse notes) while a session is worked on. Held only
+ * until the end of the next day (decision D2a), encrypted.
+ */
+export interface ScribeContentStore {
+  listSegments(clinicId: string, sessionId: string): Promise<StoredSegment[]>;
+  /** Stores each segment whose ID is not already stored for the session; the rest are skipped. Returns how many were new. */
+  addSegments(clinicId: string, sessionId: string, segments: readonly StoredSegment[]): Promise<number>;
+  getNurseNote(clinicId: string, sessionId: string): Promise<StoredNurseNote | null>;
+  /** Must throw VersionConflictError unless the stored revision is `expectedRevision` (0 = none stored yet). */
+  saveNurseNote(clinicId: string, sessionId: string, note: StoredNurseNote, expectedRevision: number): Promise<void>;
+  /** Deletes all of a session's content. Returns how many records were removed. */
+  deleteSession(clinicId: string, sessionId: string): Promise<number>;
+  /** Deletes content past its delete-after time, at most `limit` records per call. Returns how many were removed. */
+  purgeExpired(clinicId: string, nowMs: number, limit: number): Promise<number>;
+}
+
+export type SpeechProvider = 'SPEECHMATICS' | 'DEMO';
+
+/** What the scribe screen needs to stream audio to speech-to-text. The token lasts about a minute. */
+export interface SpeechToken {
+  provider: SpeechProvider;
+  /** WebSocket address including the short-lived token, or null in demo mode. */
+  url: string | null;
+  expiresAtMs: number;
+}
+
+export interface SpeechTokenIssuer {
+  readonly provider: SpeechProvider;
+  issue(): Promise<SpeechToken>;
+}
+
+export class SpeechServiceError extends Error {
+  constructor(readonly kind: 'NOT_CONFIGURED' | 'AUTH' | 'UNAVAILABLE') {
+    super(`Speech-to-text ${kind}`);
+    this.name = 'SpeechServiceError';
+  }
+}
+
 export interface HandlerDeps {
   clock: () => number;
   newId: () => string;
@@ -119,4 +180,8 @@ export interface HandlerDeps {
   audit: AuditSink;
   directory: ClinicDirectory;
   admin: ClinicAdminStore;
+  content: ScribeContentStore;
+  /** Created on first use, so a missing encryption key only affects scribe content, not the diary. */
+  cipher: () => Promise<ContentCipher>;
+  speech: SpeechTokenIssuer;
 }

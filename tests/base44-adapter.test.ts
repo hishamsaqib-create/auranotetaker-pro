@@ -2,7 +2,16 @@
 // They import the generated copy in base44/shared/lib so error classes match the adapter's own.
 import { describe, expect, it } from 'vitest';
 import type { Base44Like } from '../base44/shared/adapters/base44.ts';
-import { Base44AuditSink, Base44ClinicDirectory, Base44SessionRepository, resolveClinic, resolveContext } from '../base44/shared/adapters/base44.ts';
+import {
+  Base44AuditSink,
+  Base44ClinicDirectory,
+  Base44ScribeContentStore,
+  Base44SessionRepository,
+  resolveClinic,
+  resolveContext,
+  SpeechmaticsTokenIssuer,
+} from '../base44/shared/adapters/base44.ts';
+import { SpeechServiceError } from '../base44/shared/lib/server/ports.ts';
 import { createSession, transition } from '../base44/shared/lib/core/session.ts';
 import type { ScribeSession } from '../base44/shared/lib/core/session.ts';
 import { AppError } from '../base44/shared/lib/server/errors.ts';
@@ -19,6 +28,7 @@ function matches(row: Row, query: Query): boolean {
       const c = cond as Record<string, unknown>;
       if (Array.isArray(c.$in)) return c.$in.includes(value);
       if (typeof c.$gte === 'string') return typeof value === 'string' && value >= c.$gte;
+      if (typeof c.$lte === 'string') return typeof value === 'string' && value <= c.$lte;
       throw new Error(`unsupported operator in ${key}`);
     }
     return value === cond;
@@ -52,6 +62,10 @@ class FakeEntity {
     const row = this.rows.find((r) => r.id === id)!;
     Object.assign(row, structuredClone(data));
     return structuredClone(row);
+  }
+
+  async delete(id: string): Promise<void> {
+    this.rows = this.rows.filter((r) => r.id !== id);
   }
 
   async updateMany(query: Query, data: Record<string, Record<string, unknown>>): Promise<{ updated: number }> {
@@ -228,5 +242,92 @@ describe('Base44 caller and directory', () => {
     await clinicians.create({ clinic_id: 'clinic-aura', active: true, display_name: 'Dr Sarah Lin' });
     const directory = new Base44ClinicDirectory(fakeBase44({ Clinician: clinicians }));
     await expect(directory.listClinicians('clinic-aura')).rejects.toBeInstanceOf(AppError);
+  });
+});
+
+describe('Base44ScribeContentStore', () => {
+  const seg = (id: string, seq: number, deleteAfterMs = T + 86_400_000) => ({
+    segmentId: id,
+    seq,
+    startMs: seq * 1000,
+    endMs: seq * 1000 + 500,
+    speaker: 'S1',
+    cipherText: `v1.iv.${id}`,
+    capturedBy: 'nurse@aura.test',
+    savedAtMs: T,
+    deleteAfterMs,
+  });
+
+  function store() {
+    const entities = { TranscriptSegment: new FakeEntity(), NurseNote: new FakeEntity() };
+    return { entities, s: new Base44ScribeContentStore(fakeBase44(entities)) };
+  }
+
+  it('stores segments once per ID and reads them back', async () => {
+    const { s } = store();
+    expect(await s.addSegments('c', 's1', [seg('segment-01', 1), seg('segment-02', 2)])).toBe(2);
+    expect(await s.addSegments('c', 's1', [seg('segment-02', 2), seg('segment-03', 3)])).toBe(1);
+    const back = await s.listSegments('c', 's1');
+    expect(back.map((x) => x.segmentId).sort()).toEqual(['segment-01', 'segment-02', 'segment-03']);
+    expect(back[0]).toMatchObject({ speaker: 'S1', capturedBy: 'nurse@aura.test' });
+  });
+
+  it('refuses a malformed stored segment instead of guessing', async () => {
+    const { s, entities } = store();
+    await s.addSegments('c', 's1', [seg('segment-01', 1)]);
+    delete entities.TranscriptSegment.rows[0]!.cipher_text;
+    await expect(s.listSegments('c', 's1')).rejects.toBeInstanceOf(AppError);
+  });
+
+  it('saves nurse notes by revision', async () => {
+    const { s } = store();
+    const note = (revision: number, cipherText: string) => ({ cipherText, revision, updatedBy: 'n@aura.test', updatedAtMs: T, deleteAfterMs: T + 1 });
+    await s.saveNurseNote('c', 's1', note(1, 'v1.a.b'), 0);
+    await expect(s.saveNurseNote('c', 's1', note(1, 'v1.c.d'), 0)).rejects.toBeInstanceOf(VersionConflictError);
+    await s.saveNurseNote('c', 's1', note(2, 'v1.e.f'), 1);
+    await expect(s.saveNurseNote('c', 's1', note(2, 'v1.g.h'), 1)).rejects.toBeInstanceOf(VersionConflictError);
+    expect(await s.getNurseNote('c', 's1')).toMatchObject({ cipherText: 'v1.e.f', revision: 2 });
+  });
+
+  it('deletes a session\'s content, and content past its time', async () => {
+    const { s, entities } = store();
+    await s.addSegments('c', 's1', [seg('segment-01', 1), seg('segment-02', 2)]);
+    await s.addSegments('c', 's2', [seg('segment-03', 1, T - 1)]);
+    await s.saveNurseNote('c', 's1', { cipherText: 'v1.a.b', revision: 1, updatedBy: 'n@aura.test', updatedAtMs: T, deleteAfterMs: T + 1 }, 0);
+    expect(await s.deleteSession('c', 's1')).toBe(3);
+    expect(entities.NurseNote.rows).toHaveLength(0);
+    expect(await s.purgeExpired('c', T, 100)).toBe(1);
+    expect(entities.TranscriptSegment.rows).toHaveLength(0);
+  });
+});
+
+describe('SpeechmaticsTokenIssuer', () => {
+  const ok = async () => new Response(JSON.stringify({ apikey_id: null, key_value: 'temp.key' }), { status: 201 });
+
+  it('swaps the secret key for a one-minute key on the EU endpoint, never returning the secret', async () => {
+    let sent: RequestInit | undefined;
+    let url = '';
+    const issuer = new SpeechmaticsTokenIssuer((n) => (n === 'SPEECHMATICS_API_KEY' ? 'long-lived-secret' : undefined), (async (u: string, init: RequestInit) => {
+      url = u;
+      sent = init;
+      return ok();
+    }) as unknown as typeof fetch);
+    const t = await issuer.issue();
+    expect(url).toBe('https://mp.speechmatics.com/v1/api_keys?type=rt');
+    expect(JSON.parse(String(sent!.body))).toEqual({ ttl: 60 });
+    expect((sent!.headers as Record<string, string>).Authorization).toBe('Bearer long-lived-secret');
+    expect(t.url).toBe('wss://eu.rt.speechmatics.com/v2?jwt=temp.key');
+    expect(JSON.stringify(t)).not.toContain('long-lived-secret');
+  });
+
+  it('distinguishes a missing key, a rejected key and an outage', async () => {
+    const issuer = (secret: string | undefined, fetchImpl: () => Promise<Response>) =>
+      new SpeechmaticsTokenIssuer(() => secret, fetchImpl as unknown as typeof fetch);
+    const kind = (p: Promise<unknown>) => p.then(() => null, (e: SpeechServiceError) => e.kind);
+    expect(await kind(issuer(undefined, ok).issue())).toBe('NOT_CONFIGURED');
+    expect(await kind(issuer('k', async () => new Response('', { status: 401 })).issue())).toBe('AUTH');
+    expect(await kind(issuer('k', async () => new Response('', { status: 503 })).issue())).toBe('UNAVAILABLE');
+    expect(await kind(issuer('k', async () => Promise.reject(new Error('offline'))).issue())).toBe('UNAVAILABLE');
+    expect(await kind(issuer('k', async () => new Response('{}', { status: 201 })).issue())).toBe('UNAVAILABLE');
   });
 });

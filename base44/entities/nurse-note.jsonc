@@ -1,0 +1,18 @@
+// The nurse's notes for a session (one per session). Clinical content: encrypted with the
+// CONTENT_ENCRYPTION_KEY secret and deleted by the end of the next day (decision D2a), or at once if the
+// patient withdraws permission or the session is cancelled. Read and written only by backend functions.
+{
+  "name": "NurseNote",
+  "type": "object",
+  "properties": {
+    "clinic_id": { "type": "string" },
+    "session_id": { "type": "string" },
+    "cipher_text": { "type": "string", "description": "AES-256-GCM, bound to clinic and session" },
+    "revision": { "type": "integer", "minimum": 1, "description": "Saves name the revision they edited, so two screens cannot overwrite each other" },
+    "updated_by_email": { "type": "string", "format": "email" },
+    "updated_at": { "type": "string", "format": "date-time" },
+    "delete_after": { "type": "string", "format": "date-time" }
+  },
+  "required": ["clinic_id", "session_id", "cipher_text", "revision", "updated_by_email", "updated_at", "delete_after"],
+  "rls": { "create": false, "read": false, "update": false, "delete": false }
+}

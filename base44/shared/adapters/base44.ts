@@ -25,7 +25,10 @@ import { DentallyClient } from '../lib/dentally/client.ts';
 import { createLiveDentallyService } from '../lib/dentally/service.ts';
 import type { BootstrapCaller, ClinicRegistry, ClinicRow } from '../lib/server/bootstrap.ts';
 import { bootstrapClinic } from '../lib/server/bootstrap.ts';
+import { AesGcmContentCipher } from '../lib/server/cipher.ts';
+import type { ContentCipher } from '../lib/server/cipher.ts';
 import { AppError } from '../lib/server/errors.ts';
+import { SPEECHMATICS_RT_URL, SPEECHMATICS_TEMP_KEY_TTL_SECONDS, SPEECHMATICS_TEMP_KEY_URL } from '../lib/speech/speechmatics.ts';
 import type {
   AppRole,
   AuditSink,
@@ -35,13 +38,18 @@ import type {
   ClinicianEntry,
   ClinicianRecord,
   HandlerDeps,
+  ScribeContentStore,
   SessionRepository,
+  SpeechToken,
+  SpeechTokenIssuer,
+  StoredNurseNote,
+  StoredSegment,
   StaffContext,
   StaffProfileRecord,
   SurgeryEntry,
   SurgeryRecord,
 } from '../lib/server/ports.ts';
-import { APP_ROLES, VersionConflictError } from '../lib/server/ports.ts';
+import { APP_ROLES, SpeechServiceError, VersionConflictError } from '../lib/server/ports.ts';
 
 // Minimal structural types so this file does not depend on SDK type definitions.
 type Row = Record<string, unknown> & { id?: string };
@@ -50,6 +58,7 @@ interface EntityApi {
   create(data: Record<string, unknown>): Promise<Row>;
   update(id: string, data: Record<string, unknown>): Promise<Row>;
   updateMany(query: Record<string, unknown>, data: Record<string, Record<string, unknown>>): Promise<{ updated?: number } | null>;
+  delete(id: string): Promise<unknown>;
 }
 export interface Base44Like {
   auth: { me(): Promise<{ email?: string | null; full_name?: string | null; role?: string | null } | null> };
@@ -518,9 +527,180 @@ export class Base44ClinicRegistry implements ClinicRegistry {
 }
 
 // ---------------------------------------------------------------------------
+// Scribe content: transcript segments and nurse notes, encrypted, deleted by the end of the next day.
+
+const SPEAKER = /^[A-Za-z0-9_]{1,8}$/;
+const SEGMENT_ID = /^[A-Za-z0-9_-]{8,64}$/;
+
+function rowToSegment(r: Row): StoredSegment {
+  const n = (v: unknown) => (typeof v === 'number' && Number.isSafeInteger(v) && v >= 0 ? v : null);
+  const segmentId = str(r.segment_id);
+  const seq = n(r.seq);
+  const startMs = n(r.start_ms);
+  const endMs = n(r.end_ms);
+  const cipherText = str(r.cipher_text);
+  const capturedBy = str(r.captured_by_email);
+  const savedAtMs = isoToMs(r.saved_at);
+  const deleteAfterMs = isoToMs(r.delete_after);
+  const speaker = r.speaker === undefined || r.speaker === null ? null : str(r.speaker);
+  if (
+    !segmentId || !SEGMENT_ID.test(segmentId) || seq === null || startMs === null || endMs === null || !cipherText || !capturedBy ||
+    savedAtMs === null || deleteAfterMs === null || (speaker !== null && !SPEAKER.test(speaker))
+  ) {
+    throw new AppError('INTERNAL', UNREADABLE);
+  }
+  return { segmentId, seq, startMs, endMs, speaker, cipherText, capturedBy, savedAtMs, deleteAfterMs };
+}
+
+export class Base44ScribeContentStore implements ScribeContentStore {
+  constructor(private readonly base44: Base44Like) {}
+
+  private get segments(): EntityApi {
+    return this.base44.asServiceRole.entities.TranscriptSegment!;
+  }
+
+  private get notes(): EntityApi {
+    return this.base44.asServiceRole.entities.NurseNote!;
+  }
+
+  async listSegments(clinicId: string, sessionId: string): Promise<StoredSegment[]> {
+    return (await allRows(this.segments, { clinic_id: clinicId, session_id: sessionId })).map(rowToSegment);
+  }
+
+  async addSegments(clinicId: string, sessionId: string, list: readonly StoredSegment[]): Promise<number> {
+    const existing = new Set((await this.listSegments(clinicId, sessionId)).map((s) => s.segmentId));
+    let added = 0;
+    for (const s of list) {
+      if (existing.has(s.segmentId)) continue;
+      await this.segments.create(compact({
+        clinic_id: clinicId,
+        session_id: sessionId,
+        segment_id: s.segmentId,
+        seq: s.seq,
+        start_ms: s.startMs,
+        end_ms: s.endMs,
+        speaker: s.speaker,
+        cipher_text: s.cipherText,
+        captured_by_email: s.capturedBy,
+        saved_at: msToIso(s.savedAtMs),
+        delete_after: msToIso(s.deleteAfterMs),
+      }));
+      existing.add(s.segmentId);
+      added += 1;
+    }
+    return added;
+  }
+
+  private async noteRows(clinicId: string, sessionId: string): Promise<Row[]> {
+    const found = await allRows(this.notes, { clinic_id: clinicId, session_id: sessionId });
+    if (found.length > 1) throw new AppError('INTERNAL', UNREADABLE); // one per session
+    return found;
+  }
+
+  async getNurseNote(clinicId: string, sessionId: string): Promise<StoredNurseNote | null> {
+    const r = (await this.noteRows(clinicId, sessionId))[0];
+    if (!r) return null;
+    const cipherText = str(r.cipher_text);
+    const updatedBy = str(r.updated_by_email);
+    const updatedAtMs = isoToMs(r.updated_at);
+    const deleteAfterMs = isoToMs(r.delete_after);
+    if (!cipherText || !updatedBy || updatedAtMs === null || deleteAfterMs === null || typeof r.revision !== 'number' || r.revision < 1) {
+      throw new AppError('INTERNAL', UNREADABLE);
+    }
+    return { cipherText, revision: r.revision, updatedBy, updatedAtMs, deleteAfterMs };
+  }
+
+  async saveNurseNote(clinicId: string, sessionId: string, note: StoredNurseNote, expectedRevision: number): Promise<void> {
+    const row = {
+      clinic_id: clinicId,
+      session_id: sessionId,
+      cipher_text: note.cipherText,
+      revision: note.revision,
+      updated_by_email: note.updatedBy,
+      updated_at: msToIso(note.updatedAtMs),
+      delete_after: msToIso(note.deleteAfterMs),
+    };
+    if (expectedRevision === 0) {
+      if ((await this.noteRows(clinicId, sessionId)).length > 0) throw new VersionConflictError();
+      await this.notes.create(row);
+      // Two first saves at the same moment: keep the earliest, refuse the other.
+      const after = await allRows(this.notes, { clinic_id: clinicId, session_id: sessionId });
+      if (after.length > 1) {
+        const mine = after.find((r) => r.cipher_text === note.cipherText);
+        if (mine?.id) await this.notes.delete(mine.id);
+        throw new VersionConflictError();
+      }
+      return;
+    }
+    const result = await this.notes.updateMany({ clinic_id: clinicId, session_id: sessionId, revision: expectedRevision }, { $set: row });
+    if (!result || result.updated !== 1) throw new VersionConflictError();
+  }
+
+  async deleteSession(clinicId: string, sessionId: string): Promise<number> {
+    let count = 0;
+    for (const entity of [this.segments, this.notes]) {
+      for (const r of await allRows(entity, { clinic_id: clinicId, session_id: sessionId })) {
+        if (!r.id) throw new AppError('INTERNAL', UNREADABLE);
+        await entity.delete(r.id);
+        count += 1;
+      }
+    }
+    return count;
+  }
+
+  async purgeExpired(clinicId: string, nowMs: number, limit: number): Promise<number> {
+    let count = 0;
+    const query = { clinic_id: clinicId, delete_after: { $lte: new Date(nowMs).toISOString() } };
+    for (const entity of [this.segments, this.notes]) {
+      const page = rows(await entity.filter(query, { limit: Math.max(1, limit - count) }));
+      for (const r of page) {
+        if (count >= limit) return count;
+        if (!r.id) throw new AppError('INTERNAL', UNREADABLE);
+        await entity.delete(r.id);
+        count += 1;
+      }
+    }
+    return count;
+  }
+}
+
+/** Swaps the long-lived Speechmatics key (a Base44 secret) for a key that lasts a minute, for the browser. */
+export class SpeechmaticsTokenIssuer implements SpeechTokenIssuer {
+  readonly provider = 'SPEECHMATICS' as const;
+  constructor(private readonly readSecret: SecretReader, private readonly fetchImpl: typeof fetch = fetch) {}
+
+  async issue(): Promise<SpeechToken> {
+    const apiKey = this.readSecret('SPEECHMATICS_API_KEY');
+    if (!apiKey) throw new SpeechServiceError('NOT_CONFIGURED');
+    let res: Response;
+    try {
+      res = await this.fetchImpl(SPEECHMATICS_TEMP_KEY_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+        body: JSON.stringify({ ttl: SPEECHMATICS_TEMP_KEY_TTL_SECONDS }),
+        signal: AbortSignal.timeout(10_000),
+      });
+    } catch {
+      throw new SpeechServiceError('UNAVAILABLE');
+    }
+    if (res.status === 401 || res.status === 403) throw new SpeechServiceError('AUTH');
+    if (!res.ok) throw new SpeechServiceError('UNAVAILABLE');
+    const body = (await res.json().catch(() => null)) as { key_value?: unknown } | null;
+    const key = typeof body?.key_value === 'string' ? body.key_value : '';
+    if (!key) throw new SpeechServiceError('UNAVAILABLE');
+    return {
+      provider: 'SPEECHMATICS',
+      url: `${SPEECHMATICS_RT_URL}?jwt=${encodeURIComponent(key)}`,
+      expiresAtMs: Date.now() + SPEECHMATICS_TEMP_KEY_TTL_SECONDS * 1000,
+    };
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Wiring
 
 export async function buildDeps(base44: Base44Like, clinic: ClinicConfig, readSecret: SecretReader): Promise<HandlerDeps> {
+  let cipher: Promise<ContentCipher> | undefined;
   const client = new DentallyClient({
     baseUrl: requireSecret(readSecret, 'DENTALLY_BASE_URL'),
     token: requireSecret(readSecret, 'DENTALLY_API_TOKEN'),
@@ -535,6 +715,12 @@ export async function buildDeps(base44: Base44Like, clinic: ClinicConfig, readSe
     audit: new Base44AuditSink(base44),
     directory: new Base44ClinicDirectory(base44),
     admin: new Base44ClinicDirectory(base44),
+    content: new Base44ScribeContentStore(base44),
+    cipher: () => {
+      cipher ??= AesGcmContentCipher.fromBase64Key(requireSecret(readSecret, 'CONTENT_ENCRYPTION_KEY'));
+      return cipher;
+    },
+    speech: new SpeechmaticsTokenIssuer(readSecret),
   };
 }
 

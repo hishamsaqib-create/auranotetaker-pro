@@ -6,7 +6,12 @@ import { DEMO_PRACTITIONERS, DEMO_ROOMS, DEMO_SCENARIOS, MockDentallyService } f
 import { AppError } from '../../lib/server/errors.ts';
 import {
   cancelSession,
+  changeRecording,
   confirmPatient,
+  getScribeContent,
+  getSpeechToken,
+  saveNurseNote,
+  saveTranscript,
   getActiveSession,
   getClinicSetup,
   getDiary,
@@ -19,7 +24,8 @@ import {
   saveStaffProfile,
   saveSurgeries,
 } from '../../lib/server/handlers.ts';
-import { InMemoryAuditSink, InMemorySessionRepository, StaticClinicDirectory } from '../../lib/server/memory.ts';
+import { AesGcmContentCipher } from '../../lib/server/cipher.ts';
+import { DemoSpeechTokenIssuer, InMemoryAuditSink, InMemoryScribeContentStore, InMemorySessionRepository, StaticClinicDirectory } from '../../lib/server/memory.ts';
 import type { AppRole, HandlerDeps, StaffContext } from '../../lib/server/ports.ts';
 import type { AppBackend, DemoUser } from './types.ts';
 import { BackendError } from './types.ts';
@@ -61,6 +67,8 @@ export function createDemoBackend(opts: DemoBackendOptions = {}): AppBackend {
     DEMO_ROOMS.map((r, i) => ({ surgeryId: `DEMO-SURGERY-${i + 1}`, name: r.name, roomId: r.roomId })),
     DEMO_USERS.map((u) => ({ email: u.email, displayName: u.displayName, roles: [...u.roles], clinicianId: u.clinicianId, active: true })),
   );
+  // One throwaway key per demo tab: demo content is encrypted the same way as live content.
+  const demoCipher = AesGcmContentCipher.generate();
   const deps: HandlerDeps = {
     clock,
     newId: () => (typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `demo-session-${++ids}`),
@@ -76,6 +84,9 @@ export function createDemoBackend(opts: DemoBackendOptions = {}): AppBackend {
     audit,
     directory,
     admin: directory,
+    content: new InMemoryScribeContentStore(),
+    cipher: () => demoCipher,
+    speech: new DemoSpeechTokenIssuer(clock),
   };
 
   let user: DemoUserRecord | null = null;
@@ -142,5 +153,12 @@ export function createDemoBackend(opts: DemoBackendOptions = {}): AppBackend {
     saveClinicians: (clinicians) => run(() => saveClinicians(ctx(), deps, { clinicians })),
     saveSurgeries: (surgeries) => run(() => saveSurgeries(ctx(), deps, { surgeries })),
     saveStaffProfile: (profile) => run(() => saveStaffProfile(ctx(), deps, { ...profile })),
+    changeRecording: (sessionId, surgeryId, action, expectedVersion) =>
+      run(() => changeRecording(ctx(), deps, { sessionId, surgeryId, action, expectedVersion })),
+    getSpeechToken: (sessionId, surgeryId) => run(() => getSpeechToken(ctx(), deps, { sessionId, surgeryId })),
+    saveTranscript: (sessionId, surgeryId, segments) => run(() => saveTranscript(ctx(), deps, { sessionId, surgeryId, segments })),
+    getScribeContent: (sessionId, surgeryId) => run(() => getScribeContent(ctx(), deps, { sessionId, surgeryId })),
+    saveNurseNote: (sessionId, surgeryId, text, expectedRevision) =>
+      run(() => saveNurseNote(ctx(), deps, { sessionId, surgeryId, text, expectedRevision })),
   };
 }

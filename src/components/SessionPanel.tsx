@@ -8,6 +8,8 @@ import type { AppBackend } from '../backend/types.ts';
 import { BackendError } from '../backend/types.ts';
 import { LockIcon } from './icons.tsx';
 import { Notice } from './Notice.tsx';
+import type { ScribeWorkspaceProps } from './ScribeWorkspace.tsx';
+import { ScribeWorkspace } from './ScribeWorkspace.tsx';
 
 export interface SessionPanelProps {
   backend: AppBackend;
@@ -26,6 +28,8 @@ export interface SessionPanelProps {
   /** Close the panel. `declinedAppointmentId` is set when the patient declined the scribe. */
   onClose: (declinedAppointmentId: string | null) => void;
   onReload: () => void;
+  /** Tests only: fake microphone and speech-to-text. */
+  scribeDevices?: Pick<ScribeWorkspaceProps, 'startCapture' | 'listMicrophones' | 'connect'>;
 }
 
 type PatientDisplay = { status: 'ok'; patient: PatientSummary } | { status: 'loading' } | { status: 'error' };
@@ -197,27 +201,18 @@ export function SessionPanel(p: SessionPanelProps) {
             </section>
           )}
 
-          {s.status === 'READY' && (
-            <section className="step" aria-labelledby="ready-heading">
-              <h1 id="ready-heading" className="state-title">
-                Ready to record
-              </h1>
-              <p className="state-lead">
-                {first === 'the patient' ? 'The patient' : first} agreed. Recording arrives in Phase 2 of the build, so this version stops here.
-                Nothing has been recorded.
-              </p>
-              <div className="actions">
-                <button type="button" className="button button-record" disabled aria-describedby="record-note">
-                  Start scribe
-                </button>
-                <button type="button" className="button button-secondary" disabled={busy} onClick={cancel}>
-                  End session
-                </button>
-              </div>
-              <p id="record-note" className="visually-hidden">
-                Recording is not available in this version.
-              </p>
-            </section>
+          {(s.status === 'READY' || s.status === 'RECORDING' || s.status === 'PAUSED' || s.status === 'STOPPED') && (
+            <ScribeWorkspace
+              backend={p.backend}
+              session={s}
+              surgeryId={p.currentSurgeryId}
+              timeZone={p.timeZone}
+              firstName={first}
+              onSessionChange={p.onSessionChange}
+              onWithdraw={() => act(() => p.backend.recordConsent(s.sessionId, false, s.version, p.currentSurgeryId))}
+              onCancel={cancel}
+              {...p.scribeDevices}
+            />
           )}
 
           {s.status === 'CONSENT_DECLINED' && (
@@ -226,8 +221,9 @@ export function SessionPanel(p: SessionPanelProps) {
                 Scribe off for this appointment
               </h1>
               <p className="state-lead">
-                {first === 'the patient' ? 'The patient' : first} declined. Nothing will be recorded, and nothing about this appointment will be
-                sent for AI processing.
+                {first === 'the patient' ? 'The patient' : first} declined.{' '}
+                {s.recordingStartedAtMs !== null ? 'Recording stopped and what was captured has been deleted, and' : 'Nothing will be recorded, and'}{' '}
+                nothing about this appointment will be sent for AI processing.
               </p>
               <div className="actions">
                 <button type="button" className="button button-primary" onClick={() => p.onClose(appt.appointmentId)}>

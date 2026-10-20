@@ -101,5 +101,10 @@ export function createBase44Backend(cfg: { appId: string; serverUrl?: string }):
     saveClinicians: (clinicians) => call('saveClinicians', { clinicians }),
     saveSurgeries: (surgeries) => call('saveSurgeries', { surgeries }),
     saveStaffProfile: (profile) => call('saveStaffProfile', { ...profile }),
+    changeRecording: (sessionId, surgeryId, action, expectedVersion) => call('changeRecording', { sessionId, surgeryId, action, expectedVersion }),
+    getSpeechToken: (sessionId, surgeryId) => call('getSpeechToken', { sessionId, surgeryId }),
+    saveTranscript: (sessionId, surgeryId, segments) => call('saveTranscript', { sessionId, surgeryId, segments }),
+    getScribeContent: (sessionId, surgeryId) => call('getScribeContent', { sessionId, surgeryId }),
+    saveNurseNote: (sessionId, surgeryId, text, expectedRevision) => call('saveNurseNote', { sessionId, surgeryId, text, expectedRevision }),
   };
 }

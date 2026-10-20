@@ -1,0 +1,23 @@
+// One finished piece of a session's transcript. Clinical content: the text is encrypted with the
+// CONTENT_ENCRYPTION_KEY secret (lib/server/cipher.ts) and the row is deleted by the end of the next
+// day (decision D2a), or at once if the patient withdraws permission or the session is cancelled.
+// Read and written only by backend functions.
+{
+  "name": "TranscriptSegment",
+  "type": "object",
+  "properties": {
+    "clinic_id": { "type": "string" },
+    "session_id": { "type": "string" },
+    "segment_id": { "type": "string", "maxLength": 64, "description": "Made by the scribe screen; a retried save stores it once" },
+    "seq": { "type": "integer", "minimum": 1 },
+    "start_ms": { "type": "integer", "minimum": 0, "description": "Offset into the recording" },
+    "end_ms": { "type": "integer", "minimum": 0 },
+    "speaker": { "type": "string", "maxLength": 8, "description": "Speech-to-text label such as S1. Never a name." },
+    "cipher_text": { "type": "string", "description": "AES-256-GCM, bound to clinic, session and segment" },
+    "captured_by_email": { "type": "string", "format": "email" },
+    "saved_at": { "type": "string", "format": "date-time" },
+    "delete_after": { "type": "string", "format": "date-time" }
+  },
+  "required": ["clinic_id", "session_id", "segment_id", "seq", "start_ms", "end_ms", "cipher_text", "captured_by_email", "saved_at", "delete_after"],
+  "rls": { "create": false, "read": false, "update": false, "delete": false }
+}

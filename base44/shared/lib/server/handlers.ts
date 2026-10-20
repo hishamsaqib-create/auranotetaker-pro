@@ -16,11 +16,15 @@ import { predictLikelyPatient } from '../core/prediction.ts';
 import type { ConfirmationMethod, ScribeSession, SessionEvent } from '../core/session.ts';
 import { createSession, isTerminal, transition } from '../core/session.ts';
 import { zonedDateString } from '../core/time.ts';
+import type { NurseNote, TranscriptSegment } from '../core/transcript.ts';
+import { contentDeleteAfterMs, orderSegments, validateNurseNoteText, validateSegments } from '../core/transcript.ts';
 import { DentallyError } from '../dentally/client.ts';
 import type { PatientSummary, PractitionerSummary, RoomSummary } from '../dentally/types.ts';
+import { ContentCipherError } from './cipher.ts';
 import { AppError } from './errors.ts';
 import type { AppRole, ClinicianEntry, ClinicianRecord, HandlerDeps, StaffContext, StaffProfileRecord, SurgeryEntry, SurgeryRecord } from './ports.ts';
-import { APP_ROLES, VersionConflictError } from './ports.ts';
+import type { SpeechToken } from './ports.ts';
+import { APP_ROLES, SpeechServiceError, VersionConflictError } from './ports.ts';
 
 export const CLINICAL_ROLES: readonly AppRole[] = ['DENTIST', 'THERAPIST', 'HYGIENIST', 'NURSE'];
 const CONFIRMATION_METHODS: readonly ConfirmationMethod[] = ['CONFIRMED_SUGGESTION', 'CHOSE_ALTERNATIVE', 'RESOLVED_AMBIGUITY', 'CHOSE_FROM_DIARY'];
@@ -134,6 +138,11 @@ function reqEnum<T extends string>(v: unknown, allowed: readonly T[], field: str
 
 function reqInt(v: unknown, field: string): number {
   if (typeof v !== 'number' || !Number.isSafeInteger(v) || v < 1) throw new AppError('VALIDATION', `Missing or invalid ${field}.`);
+  return v;
+}
+
+function reqCount(v: unknown, field: string): number {
+  if (typeof v !== 'number' || !Number.isSafeInteger(v) || v < 0) throw new AppError('VALIDATION', `Missing or invalid ${field}.`);
   return v;
 }
 
@@ -643,6 +652,8 @@ export async function recordConsent(
     dentallyAppointmentId: after.patient.appointment.appointmentId,
     details: { given, statusBefore: before.status },
   });
+  // Decision D7: a decline or withdrawal means nothing from this appointment is kept or processed.
+  if (!given) await deleteSessionContent(ctx, deps, after, 'CONSENT_WITHDRAWN');
   return { session: after };
 }
 
@@ -666,6 +677,8 @@ export async function cancelSession(
     dentallyAppointmentId: after.patient.appointment.appointmentId,
     details: { statusBefore: before.status, reasonCode: 'USER_CANCELLED' },
   });
+  // Nurse notes can be typed before recording starts; a cancelled session keeps none of them.
+  await deleteSessionContent(ctx, deps, after, 'SESSION_CANCELLED');
   return { session: after };
 }
 
@@ -728,6 +741,295 @@ export async function getDentallyStatus(ctx: StaffContext, deps: HandlerDeps): P
     const auth = err instanceof DentallyError && (err.kind === 'AUTH' || err.kind === 'CONFIG');
     return { status: auth ? 'AUTH_ERROR' : 'UNAVAILABLE', mode: deps.dentally.mode, latencyMs: null, checkedAt };
   }
+}
+
+// ---------------------------------------------------------------------------
+// Scribe capture (Phase 2): recording controls, speech-to-text tokens, transcript and nurse notes.
+//
+// SAFETY (hazards H02, H03, H12):
+// - Nothing is captured until the patient's permission is recorded (the session state machine refuses it),
+//   and transcript is only accepted for a session that is recording, paused or just stopped.
+// - Only the session's members, at the surgery the session belongs to, can record or add content.
+// - Transcript and nurse notes are encrypted and kept only until the end of the next day (decision D2a).
+//   A decline, withdrawal or cancellation deletes them at once (decision D7).
+// - Audit events record what happened and how many records, never the text.
+
+export type RecordingAction = 'START' | 'PAUSE' | 'RESUME' | 'STOP';
+const RECORDING_ACTIONS: readonly RecordingAction[] = ['START', 'PAUSE', 'RESUME', 'STOP'];
+const RECORDING_EVENT: Record<RecordingAction, 'START_RECORDING' | 'PAUSE' | 'RESUME' | 'STOP'> = {
+  START: 'START_RECORDING',
+  PAUSE: 'PAUSE',
+  RESUME: 'RESUME',
+  STOP: 'STOP',
+};
+
+export interface RecordingResponse extends SessionResponse {
+  /** Set when old transcripts past their deletion time could not be deleted. Recording still works. */
+  warning: 'RETENTION_CLEANUP_FAILED' | null;
+}
+
+export type SpeechTokenResponse = SpeechToken;
+
+export interface ScribeContentResponse {
+  segments: TranscriptSegment[];
+  nurseNote: NurseNote | null;
+}
+
+export interface SaveTranscriptResponse {
+  /** Segments newly stored by this save (a retried save stores nothing twice). */
+  saved: number;
+}
+
+export interface NurseNoteResponse {
+  nurseNote: NurseNote;
+}
+
+const ACCEPTS_TRANSCRIPT = new Set<ScribeSession['status']>(['RECORDING', 'PAUSED', 'STOPPED']);
+const ACCEPTS_NURSE_NOTES = new Set<ScribeSession['status']>(['READY', 'RECORDING', 'PAUSED', 'STOPPED']);
+const PURGE_BATCH = 200;
+export const CONTENT_VIEW_AUDIT_WINDOW_MS = 15 * 60_000;
+
+const segmentContext = (clinicId: string, sessionId: string, segmentId: string) => `transcript:${clinicId}:${sessionId}:${segmentId}`;
+const nurseNoteContext = (clinicId: string, sessionId: string) => `nurse-note:${clinicId}:${sessionId}`;
+
+/** Loads a session for scribe work: right role, a member of the session, at the session's surgery. */
+async function loadScribeSession(ctx: StaffContext, deps: HandlerDeps, input: { sessionId?: unknown; surgeryId?: unknown }, operation: string) {
+  await requireRole(ctx, deps, CLINICAL_ROLES, operation);
+  const sessionId = reqId(input.sessionId, 'session');
+  const surgeryId = optId(input.surgeryId, 'surgery');
+  const session = await loadSession(ctx, deps, sessionId);
+  if (!isSessionMember(ctx, session)) {
+    await audit(ctx, deps, 'ACCESS_DENIED', { sessionId, details: { operation, reasonCode: 'NOT_SESSION_MEMBER' } });
+    throw new AppError('FORBIDDEN', 'Only the person who confirmed this patient, or the treating clinician, can use this session.');
+  }
+  if (session.surgeryId !== surgeryId) {
+    throw new AppError('SURGERY_MISMATCH', 'This session belongs to another surgery. Continue it there.');
+  }
+  return session;
+}
+
+async function getCipher(deps: HandlerDeps) {
+  try {
+    return await deps.cipher();
+  } catch {
+    throw new AppError('INTERNAL', 'AuraNoteTaker is not fully configured for recording. Please tell the practice manager.');
+  }
+}
+
+async function deleteSessionContent(ctx: StaffContext, deps: HandlerDeps, s: ScribeSession, reasonCode: string): Promise<void> {
+  let count: number;
+  try {
+    count = await deps.content.deleteSession(ctx.clinicId, s.sessionId);
+  } catch {
+    throw new AppError(
+      'INTERNAL',
+      'The session was closed, but its transcript or nurse notes could not be deleted. Please tell the practice manager today.',
+    );
+  }
+  if (count > 0) {
+    await auditAfterChange(ctx, deps, 'SCRIBE_CONTENT_DELETED', {
+      sessionId: s.sessionId,
+      dentallyPatientId: s.patient.dentallyPatientId,
+      dentallyAppointmentId: s.patient.appointment.appointmentId,
+      details: { reasonCode, count },
+    });
+  }
+}
+
+/** Deletes content past its time. Returns false when that failed, so the screen can say so. */
+async function purgeExpiredContent(ctx: StaffContext, deps: HandlerDeps): Promise<boolean> {
+  try {
+    const count = await deps.content.purgeExpired(ctx.clinicId, deps.clock(), PURGE_BATCH);
+    if (count > 0) {
+      await audit(ctx, deps, 'SCRIBE_CONTENT_DELETED', { actor: SYSTEM_ACTOR, details: { reasonCode: 'RETENTION_EXPIRED', count } });
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Start, pause, resume or stop recording. Starting or resuming needs a session from today. */
+export async function changeRecording(
+  ctx: StaffContext,
+  deps: HandlerDeps,
+  input: { sessionId?: unknown; surgeryId?: unknown; action?: unknown; expectedVersion?: unknown },
+): Promise<RecordingResponse> {
+  const action = reqEnum(input.action, RECORDING_ACTIONS, 'action');
+  const expectedVersion = reqInt(input.expectedVersion, 'version');
+  const before = await loadScribeSession(ctx, deps, input, 'changeRecording');
+  if (action === 'START' || action === 'RESUME') {
+    if (await expireIfAbandoned(ctx, deps, before)) {
+      throw new AppError(
+        'SESSION_EXPIRED',
+        'This session was left unused after its appointment ended, so it has been closed. Confirm the patient again if they are in the chair.',
+      );
+    }
+    if (!sessionIsToday(before, deps.clock(), deps.clinic.timeZone)) {
+      throw new AppError('NOT_TODAY', 'This session is from an earlier day and cannot record. Start a new one.');
+    }
+  }
+  const after = await applySessionEvent(deps, before, expectedVersion, { type: RECORDING_EVENT[action], by: ctx.email, atMs: deps.clock() });
+  await auditAfterChange(ctx, deps, 'SESSION_STATUS_CHANGED', {
+    sessionId: after.sessionId,
+    dentallyPatientId: after.patient.dentallyPatientId,
+    dentallyAppointmentId: after.patient.appointment.appointmentId,
+    details: { from: before.status, to: after.status, reasonCode: `USER_${action}` },
+  });
+  const cleaned = action === 'START' ? await purgeExpiredContent(ctx, deps) : true;
+  return { session: after, warning: cleaned ? null : 'RETENTION_CLEANUP_FAILED' };
+}
+
+/** A short-lived token for streaming this session's audio to speech-to-text. Only while recording. */
+export async function getSpeechToken(
+  ctx: StaffContext,
+  deps: HandlerDeps,
+  input: { sessionId?: unknown; surgeryId?: unknown },
+): Promise<SpeechTokenResponse> {
+  const s = await loadScribeSession(ctx, deps, input, 'getSpeechToken');
+  if (s.status !== 'RECORDING' || s.consent.status !== 'GIVEN') {
+    throw new AppError('SESSION_TRANSITION_REFUSED', 'This session is not recording.');
+  }
+  if (!sessionIsToday(s, deps.clock(), deps.clinic.timeZone)) {
+    throw new AppError('NOT_TODAY', 'This session is from an earlier day and cannot record.');
+  }
+  await audit(ctx, deps, 'SPEECH_TOKEN_ISSUED', {
+    sessionId: s.sessionId,
+    dentallyPatientId: s.patient.dentallyPatientId,
+    dentallyAppointmentId: s.patient.appointment.appointmentId,
+    details: { provider: deps.speech.provider },
+  });
+  try {
+    return await deps.speech.issue();
+  } catch (err) {
+    if (err instanceof SpeechServiceError && err.kind !== 'UNAVAILABLE') {
+      throw new AppError('SPEECH_NOT_CONFIGURED', 'AuraNoteTaker could not sign in to the speech-to-text service. Please tell the practice manager.');
+    }
+    throw new AppError('SPEECH_UNAVAILABLE', 'The speech-to-text service is not responding. Nurse notes still work; try recording again shortly.');
+  }
+}
+
+/** Stores finished transcript segments (encrypted). Retries are safe: a segment ID is stored once. */
+export async function saveTranscript(
+  ctx: StaffContext,
+  deps: HandlerDeps,
+  input: { sessionId?: unknown; surgeryId?: unknown; segments?: unknown },
+): Promise<SaveTranscriptResponse> {
+  const s = await loadScribeSession(ctx, deps, input, 'saveTranscript');
+  if (!ACCEPTS_TRANSCRIPT.has(s.status) || s.consent.status !== 'GIVEN') {
+    throw new AppError('SESSION_TRANSITION_REFUSED', 'This session is not recording, so the transcript was not saved.');
+  }
+  const checked = validateSegments(input.segments);
+  if (!checked.ok) throw new AppError('VALIDATION', checked.message);
+  const cipher = await getCipher(deps);
+  const now = deps.clock();
+  const deleteAfterMs = contentDeleteAfterMs(now, deps.clinic.timeZone);
+  const stored = await Promise.all(
+    checked.value.map(async (seg) => ({
+      segmentId: seg.segmentId,
+      seq: seg.seq,
+      startMs: seg.startMs,
+      endMs: seg.endMs,
+      speaker: seg.speaker,
+      cipherText: await cipher.encrypt(seg.text, segmentContext(ctx.clinicId, s.sessionId, seg.segmentId)),
+      capturedBy: ctx.email,
+      savedAtMs: now,
+      deleteAfterMs,
+    })),
+  );
+  return { saved: await deps.content.addSegments(ctx.clinicId, s.sessionId, stored) };
+}
+
+/** The session's transcript and nurse notes so far, for the scribe screen after a refresh. */
+export async function getScribeContent(
+  ctx: StaffContext,
+  deps: HandlerDeps,
+  input: { sessionId?: unknown; surgeryId?: unknown },
+): Promise<ScribeContentResponse> {
+  const s = await loadScribeSession(ctx, deps, input, 'getScribeContent');
+  if (s.consent.status !== 'GIVEN' || isTerminal(s.status)) return { segments: [], nurseNote: null };
+  const cipher = await getCipher(deps);
+  let segments: TranscriptSegment[];
+  let nurseNote: NurseNote | null;
+  try {
+    segments = orderSegments(
+      await Promise.all(
+        (await deps.content.listSegments(ctx.clinicId, s.sessionId)).map(async (r) => ({
+          segmentId: r.segmentId,
+          seq: r.seq,
+          startMs: r.startMs,
+          endMs: r.endMs,
+          speaker: r.speaker,
+          text: await cipher.decrypt(r.cipherText, segmentContext(ctx.clinicId, s.sessionId, r.segmentId)),
+          capturedBy: r.capturedBy,
+          savedAtMs: r.savedAtMs,
+        })),
+      ),
+    );
+    const note = await deps.content.getNurseNote(ctx.clinicId, s.sessionId);
+    nurseNote = note
+      ? {
+          text: await cipher.decrypt(note.cipherText, nurseNoteContext(ctx.clinicId, s.sessionId)),
+          revision: note.revision,
+          updatedBy: note.updatedBy,
+          updatedAtMs: note.updatedAtMs,
+        }
+      : null;
+  } catch (err) {
+    if (err instanceof ContentCipherError) {
+      throw new AppError('CONTENT_UNREADABLE', 'The transcript for this session could not be read. Please tell the practice manager.');
+    }
+    throw err;
+  }
+  const dedupeKey = `content:${s.sessionId}`;
+  if (!(await deps.audit.hasRecent(ctx.clinicId, ctx.email, dedupeKey, deps.clock() - CONTENT_VIEW_AUDIT_WINDOW_MS))) {
+    await audit(ctx, deps, 'SCRIBE_CONTENT_VIEWED', {
+      sessionId: s.sessionId,
+      dentallyPatientId: s.patient.dentallyPatientId,
+      dentallyAppointmentId: s.patient.appointment.appointmentId,
+      details: { purpose: 'RESTORE', segmentCount: segments.length, hasNurseNote: nurseNote !== null },
+      dedupeKey,
+    });
+  }
+  return { segments, nurseNote };
+}
+
+/** Saves the nurse notes. `expectedRevision` is the revision the screen edited (0 for the first save). */
+export async function saveNurseNote(
+  ctx: StaffContext,
+  deps: HandlerDeps,
+  input: { sessionId?: unknown; surgeryId?: unknown; text?: unknown; expectedRevision?: unknown },
+): Promise<NurseNoteResponse> {
+  const s = await loadScribeSession(ctx, deps, input, 'saveNurseNote');
+  if (!ACCEPTS_NURSE_NOTES.has(s.status) || s.consent.status !== 'GIVEN') {
+    throw new AppError('SESSION_TRANSITION_REFUSED', 'Nurse notes cannot be changed for this session now.');
+  }
+  const checked = validateNurseNoteText(input.text);
+  if (!checked.ok) throw new AppError('VALIDATION', checked.message);
+  const expectedRevision = reqCount(input.expectedRevision, 'revision');
+  const cipher = await getCipher(deps);
+  const now = deps.clock();
+  const note: NurseNote = { text: checked.value, revision: expectedRevision + 1, updatedBy: ctx.email, updatedAtMs: now };
+  try {
+    await deps.content.saveNurseNote(
+      ctx.clinicId,
+      s.sessionId,
+      {
+        cipherText: await cipher.encrypt(note.text, nurseNoteContext(ctx.clinicId, s.sessionId)),
+        revision: note.revision,
+        updatedBy: note.updatedBy,
+        updatedAtMs: note.updatedAtMs,
+        deleteAfterMs: contentDeleteAfterMs(now, deps.clinic.timeZone),
+      },
+      expectedRevision,
+    );
+  } catch (err) {
+    if (err instanceof VersionConflictError) {
+      throw new AppError('VERSION_CONFLICT', 'The nurse notes were changed on another screen. Reload them before typing more.');
+    }
+    throw err;
+  }
+  return { nurseNote: note };
 }
 
 // ---------------------------------------------------------------------------

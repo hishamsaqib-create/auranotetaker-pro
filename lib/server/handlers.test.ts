@@ -6,7 +6,12 @@ import { AppError } from './errors.ts';
 import {
   ABANDONED_AFTER_MS,
   cancelSession,
+  changeRecording,
   confirmPatient,
+  getScribeContent,
+  getSpeechToken,
+  saveNurseNote,
+  saveTranscript,
   DIARY_AUDIT_WINDOW_MS,
   getActiveSession,
   getDentallyStatus,
@@ -19,8 +24,10 @@ import {
   saveStaffProfile,
   saveSurgeries,
 } from './handlers.ts';
-import { InMemoryAuditSink, InMemorySessionRepository, StaticClinicDirectory } from './memory.ts';
-import type { HandlerDeps, SessionRepository, StaffContext } from './ports.ts';
+import { AesGcmContentCipher } from './cipher.ts';
+import { DemoSpeechTokenIssuer, InMemoryAuditSink, InMemoryScribeContentStore, InMemorySessionRepository, StaticClinicDirectory } from './memory.ts';
+import type { HandlerDeps, SessionRepository, SpeechTokenIssuer, StaffContext } from './ports.ts';
+import { SpeechServiceError } from './ports.ts';
 
 const NOW = Date.parse('2026-10-20T10:40:00+01:00');
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -47,6 +54,7 @@ function deps(scenario: DemoScenario = 'normal', opts: { clock?: () => number; a
     DEMO_ROOMS.map((r, i) => ({ surgeryId: `surgery-${i + 1}`, name: r.name, roomId: r.roomId })),
     [{ email: 'pm@aura.test', displayName: 'Practice Manager', roles: ['CLINIC_ADMIN'], clinicianId: null, active: true }],
   );
+  const cipher = AesGcmContentCipher.generate();
   return {
     clock,
     newId: () => `session-${++ids}`,
@@ -56,6 +64,9 @@ function deps(scenario: DemoScenario = 'normal', opts: { clock?: () => number; a
     audit: auditSink,
     directory,
     admin: directory,
+    content: new InMemoryScribeContentStore(),
+    cipher: () => cipher,
+    speech: new DemoSpeechTokenIssuer(clock),
   };
 }
 
@@ -494,5 +505,200 @@ describe('clinic setup', () => {
     await expectAppError(saveStaffProfile(manager, d, { email: 'x@aura.test', displayName: 'X', roles: ['DENTIST'], clinicianId: 'NOT-SET-UP', active: true }), 'VALIDATION');
     await expectAppError(saveStaffProfile(manager, d, { email: 'pm@aura.test', displayName: 'Practice Manager', roles: ['NURSE'], active: true }), 'VALIDATION');
     await expectAppError(saveStaffProfile(nurse, d, { email: 'y@aura.test', displayName: 'Y', roles: ['NURSE'], active: true }), 'FORBIDDEN');
+  });
+});
+
+describe('scribe capture', () => {
+  const at = { surgeryId: 'surgery-1' };
+  const line = (n: number, text = `Line ${n} about the lower left six.`) => ({
+    segmentId: `segment-${String(n).padStart(4, '0')}`,
+    seq: n,
+    startMs: n * 1000,
+    endMs: n * 1000 + 800,
+    speaker: 'S1',
+    text,
+  });
+
+  async function readySession(d: HandlerDeps) {
+    const { session } = await confirmPatient(nurse, d, confirmInput);
+    const r = await recordConsent(nurse, d, { sessionId: session.sessionId, given: true, expectedVersion: session.version, ...at });
+    return r.session;
+  }
+
+  async function recordingSession(d: HandlerDeps) {
+    const s = await readySession(d);
+    return (await changeRecording(nurse, d, { sessionId: s.sessionId, action: 'START', expectedVersion: s.version, ...at })).session;
+  }
+
+  it('starts, pauses, resumes and stops recording, auditing each change', async () => {
+    const d = deps();
+    let s = await readySession(d);
+    for (const [action, status] of [['START', 'RECORDING'], ['PAUSE', 'PAUSED'], ['RESUME', 'RECORDING'], ['STOP', 'STOPPED']] as const) {
+      const r = await changeRecording(nurse, d, { sessionId: s.sessionId, action, expectedVersion: s.version, ...at });
+      expect(r.session.status).toBe(status);
+      expect(r.warning).toBeNull();
+      s = r.session;
+    }
+    expect(auditSink.events.filter((e) => e.action === 'SESSION_STATUS_CHANGED').map((e) => e.details.reasonCode)).toEqual([
+      'USER_START',
+      'USER_PAUSE',
+      'USER_RESUME',
+      'USER_STOP',
+    ]);
+  });
+
+  it('cannot start before the patient agrees', async () => {
+    const d = deps();
+    const { session } = await confirmPatient(nurse, d, confirmInput);
+    const err = await expectAppError(changeRecording(nurse, d, { sessionId: session.sessionId, action: 'START', expectedVersion: session.version, ...at }), 'SESSION_TRANSITION_REFUSED');
+    expect(err.details.reason).toBe('CONSENT_REQUIRED');
+  });
+
+  it('only gives a speech token while recording, and audits it', async () => {
+    const d = deps();
+    const ready = await readySession(d);
+    await expectAppError(getSpeechToken(nurse, d, { sessionId: ready.sessionId, ...at }), 'SESSION_TRANSITION_REFUSED');
+    const rec = (await changeRecording(nurse, d, { sessionId: ready.sessionId, action: 'START', expectedVersion: ready.version, ...at })).session;
+    const token = await getSpeechToken(nurse, d, { sessionId: rec.sessionId, ...at });
+    expect(token.provider).toBe('DEMO');
+    expect(auditSink.events.at(-1)).toMatchObject({ action: 'SPEECH_TOKEN_ISSUED', details: { provider: 'DEMO' } });
+  });
+
+  it('refuses tokens and content from another surgery or someone outside the session', async () => {
+    const d = deps();
+    const s = await recordingSession(d);
+    await expectAppError(getSpeechToken(nurse, d, { sessionId: s.sessionId, surgeryId: 'surgery-2' }), 'SURGERY_MISMATCH');
+    await expectAppError(saveTranscript(otherNurse, d, { sessionId: s.sessionId, segments: [line(1)], ...at }), 'FORBIDDEN');
+    await expectAppError(getScribeContent(otherNurse, d, { sessionId: s.sessionId, ...at }), 'FORBIDDEN');
+  });
+
+  it('reports speech-to-text problems clearly', async () => {
+    const failing = (kind: 'NOT_CONFIGURED' | 'AUTH' | 'UNAVAILABLE'): SpeechTokenIssuer => ({
+      provider: 'SPEECHMATICS',
+      issue: async () => {
+        throw new SpeechServiceError(kind);
+      },
+    });
+    for (const [kind, code] of [['NOT_CONFIGURED', 'SPEECH_NOT_CONFIGURED'], ['AUTH', 'SPEECH_NOT_CONFIGURED'], ['UNAVAILABLE', 'SPEECH_UNAVAILABLE']] as const) {
+      const d = { ...deps('normal', { repo: new InMemorySessionRepository() }), speech: failing(kind) };
+      const s = await recordingSession(d);
+      await expectAppError(getSpeechToken(nurse, d, { sessionId: s.sessionId, ...at }), code);
+    }
+  });
+
+  it('stores transcript encrypted, once per segment ID, and returns it in order', async () => {
+    const d = deps();
+    const s = await recordingSession(d);
+    expect((await saveTranscript(nurse, d, { sessionId: s.sessionId, segments: [line(2), line(1)], ...at })).saved).toBe(2);
+    // A retry after a timeout stores nothing twice.
+    expect((await saveTranscript(nurse, d, { sessionId: s.sessionId, segments: [line(1), line(3)], ...at })).saved).toBe(1);
+    const stored = await d.content.listSegments(CLINIC, s.sessionId);
+    expect(stored).toHaveLength(3);
+    for (const r of stored) expect(r.cipherText).not.toContain('lower left');
+    const content = await getScribeContent(nurse, d, { sessionId: s.sessionId, ...at });
+    expect(content.segments.map((x) => x.seq)).toEqual([1, 2, 3]);
+    expect(content.segments[0]!.text).toBe('Line 1 about the lower left six.');
+  });
+
+  it('accepts the last transcript after stopping, but none before recording or after a decline', async () => {
+    const d = deps();
+    const ready = await readySession(d);
+    await expectAppError(saveTranscript(nurse, d, { sessionId: ready.sessionId, segments: [line(1)], ...at }), 'SESSION_TRANSITION_REFUSED');
+    const rec = (await changeRecording(nurse, d, { sessionId: ready.sessionId, action: 'START', expectedVersion: ready.version, ...at })).session;
+    const stopped = (await changeRecording(nurse, d, { sessionId: rec.sessionId, action: 'STOP', expectedVersion: rec.version, ...at })).session;
+    expect((await saveTranscript(nurse, d, { sessionId: stopped.sessionId, segments: [line(1)], ...at })).saved).toBe(1);
+    await recordConsent(nurse, d, { sessionId: stopped.sessionId, given: false, expectedVersion: stopped.version, ...at });
+    await expectAppError(saveTranscript(nurse, d, { sessionId: stopped.sessionId, segments: [line(2)], ...at }), 'SESSION_TRANSITION_REFUSED');
+  });
+
+  it('deletes everything captured when the patient withdraws, and audits the count without text', async () => {
+    const d = deps();
+    const s = await recordingSession(d);
+    await saveTranscript(nurse, d, { sessionId: s.sessionId, segments: [line(1), line(2)], ...at });
+    await saveNurseNote(nurse, d, { sessionId: s.sessionId, text: 'Shade A2', expectedRevision: 0, ...at });
+    await recordConsent(nurse, d, { sessionId: s.sessionId, given: false, expectedVersion: s.version, ...at });
+    expect(await d.content.listSegments(CLINIC, s.sessionId)).toEqual([]);
+    expect(await d.content.getNurseNote(CLINIC, s.sessionId)).toBeNull();
+    expect(auditSink.events.at(-1)).toMatchObject({ action: 'SCRIBE_CONTENT_DELETED', details: { reasonCode: 'CONSENT_WITHDRAWN', count: 3 } });
+    expect(JSON.stringify(auditSink.events)).not.toMatch(/lower left|Shade/);
+  });
+
+  it('says so when withdrawn content could not be deleted', async () => {
+    const base = deps();
+    const d = { ...base, content: { ...base.content, deleteSession: async () => Promise.reject(new Error('down')) } } as HandlerDeps;
+    d.content.listSegments = base.content.listSegments.bind(base.content);
+    const s = await recordingSession(d);
+    await expectAppError(recordConsent(nurse, d, { sessionId: s.sessionId, given: false, expectedVersion: s.version, ...at }), 'INTERNAL');
+    // The session is still closed: nothing more can be recorded.
+    expect((await sessions.get(CLINIC, s.sessionId))!.status).toBe('CONSENT_DECLINED');
+  });
+
+  it('deletes nurse notes typed before recording when the session is cancelled', async () => {
+    const d = deps();
+    const s = await readySession(d);
+    await saveNurseNote(nurse, d, { sessionId: s.sessionId, text: 'Patient anxious', expectedRevision: 0, ...at });
+    await cancelSession(nurse, d, { sessionId: s.sessionId, expectedVersion: s.version });
+    expect(await d.content.getNurseNote(CLINIC, s.sessionId)).toBeNull();
+  });
+
+  it('saves nurse notes by revision, refusing a stale save', async () => {
+    const d = deps();
+    const s = await recordingSession(d);
+    const first = await saveNurseNote(nurse, d, { sessionId: s.sessionId, text: 'Shade A2', expectedRevision: 0, ...at });
+    expect(first.nurseNote.revision).toBe(1);
+    await saveNurseNote(nurse, d, { sessionId: s.sessionId, text: 'Shade A2, batch 1234', expectedRevision: 1, ...at });
+    await expectAppError(saveNurseNote(nurse, d, { sessionId: s.sessionId, text: 'Overwrite', expectedRevision: 1, ...at }), 'VERSION_CONFLICT');
+    const content = await getScribeContent(nurse, d, { sessionId: s.sessionId, ...at });
+    expect(content.nurseNote).toMatchObject({ text: 'Shade A2, batch 1234', revision: 2, updatedBy: nurse.email });
+  });
+
+  it('refuses nurse notes before the patient agrees', async () => {
+    const d = deps();
+    const { session } = await confirmPatient(nurse, d, confirmInput);
+    await expectAppError(saveNurseNote(nurse, d, { sessionId: session.sessionId, text: 'x', expectedRevision: 0, ...at }), 'SESSION_TRANSITION_REFUSED');
+  });
+
+  it('audits viewing saved content once per window, with counts only', async () => {
+    let t = NOW;
+    const d = deps('normal', { clock: () => t });
+    const s = await recordingSession(d);
+    await saveTranscript(nurse, d, { sessionId: s.sessionId, segments: [line(1)], ...at });
+    await getScribeContent(nurse, d, { sessionId: s.sessionId, ...at });
+    await getScribeContent(nurse, d, { sessionId: s.sessionId, ...at });
+    const views = () => auditSink.events.filter((e) => e.action === 'SCRIBE_CONTENT_VIEWED');
+    expect(views()).toHaveLength(1);
+    expect(views()[0]!.details).toEqual({ purpose: 'RESTORE', segmentCount: 1, hasNurseNote: false });
+    t += 16 * 60_000;
+    await getScribeContent(nurse, d, { sessionId: s.sessionId, ...at });
+    expect(views()).toHaveLength(2);
+  });
+
+  it('deletes content past its time when recording starts, and warns if that fails', async () => {
+    const d = deps();
+    await d.content.addSegments(CLINIC, 'old-session', [
+      { segmentId: 'old-segment-1', seq: 1, startMs: 0, endMs: 1, speaker: null, cipherText: 'v1.x.y', capturedBy: 'n', savedAtMs: NOW - 3 * DAY_MS, deleteAfterMs: NOW - DAY_MS },
+    ]);
+    const s = await readySession(d);
+    const r = await changeRecording(nurse, d, { sessionId: s.sessionId, action: 'START', expectedVersion: s.version, ...at });
+    expect(r.warning).toBeNull();
+    expect(await d.content.listSegments(CLINIC, 'old-session')).toEqual([]);
+    expect(auditSink.events.some((e) => e.action === 'SCRIBE_CONTENT_DELETED' && e.details.reasonCode === 'RETENTION_EXPIRED')).toBe(true);
+
+    const broken = deps('normal', { repo: new InMemorySessionRepository() });
+    const failing = { ...broken, content: Object.assign(Object.create(Object.getPrototypeOf(broken.content)), broken.content, { purgeExpired: async () => Promise.reject(new Error('down')) }) } as HandlerDeps;
+    const s2 = await readySession(failing);
+    const r2 = await changeRecording(nurse, failing, { sessionId: s2.sessionId, action: 'START', expectedVersion: s2.version, ...at });
+    expect(r2.session.status).toBe('RECORDING');
+    expect(r2.warning).toBe('RETENTION_CLEANUP_FAILED');
+  });
+
+  it('will not start recording a session from an earlier day', async () => {
+    let t = NOW;
+    const d = deps('normal', { clock: () => t });
+    const s = await readySession(d);
+    t = NOW + DAY_MS;
+    const err = await changeRecording(nurse, d, { sessionId: s.sessionId, action: 'START', expectedVersion: s.version, ...at }).then(() => null, (e) => e);
+    expect(err).toBeInstanceOf(AppError);
+    expect(['NOT_TODAY', 'SESSION_EXPIRED']).toContain((err as AppError).code);
   });
 });

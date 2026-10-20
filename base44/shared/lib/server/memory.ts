@@ -11,7 +11,12 @@ import type {
   ClinicDirectory,
   ClinicianEntry,
   ClinicianRecord,
+  ScribeContentStore,
   SessionRepository,
+  SpeechToken,
+  SpeechTokenIssuer,
+  StoredNurseNote,
+  StoredSegment,
   StaffProfileRecord,
   SurgeryEntry,
   SurgeryRecord,
@@ -142,5 +147,81 @@ export class StaticClinicDirectory implements ClinicDirectory, ClinicAdminStore 
     const i = this.#staff.findIndex((x) => x.email === record.email);
     if (i >= 0) this.#staff[i] = structuredClone(record);
     else this.#staff.push(structuredClone(record));
+  }
+}
+
+export class InMemoryScribeContentStore implements ScribeContentStore {
+  readonly #segments = new Map<string, StoredSegment[]>();
+  readonly #notes = new Map<string, StoredNurseNote>();
+
+  #key(clinicId: string, sessionId: string): string {
+    return `${clinicId}/${sessionId}`;
+  }
+
+  async listSegments(clinicId: string, sessionId: string): Promise<StoredSegment[]> {
+    return structuredClone(this.#segments.get(this.#key(clinicId, sessionId)) ?? []);
+  }
+
+  async addSegments(clinicId: string, sessionId: string, segments: readonly StoredSegment[]): Promise<number> {
+    const key = this.#key(clinicId, sessionId);
+    const list = this.#segments.get(key) ?? [];
+    const ids = new Set(list.map((s) => s.segmentId));
+    let added = 0;
+    for (const s of segments) {
+      if (ids.has(s.segmentId)) continue;
+      ids.add(s.segmentId);
+      list.push(structuredClone(s));
+      added += 1;
+    }
+    this.#segments.set(key, list);
+    return added;
+  }
+
+  async getNurseNote(clinicId: string, sessionId: string): Promise<StoredNurseNote | null> {
+    const note = this.#notes.get(this.#key(clinicId, sessionId));
+    return note ? structuredClone(note) : null;
+  }
+
+  async saveNurseNote(clinicId: string, sessionId: string, note: StoredNurseNote, expectedRevision: number): Promise<void> {
+    const key = this.#key(clinicId, sessionId);
+    if ((this.#notes.get(key)?.revision ?? 0) !== expectedRevision) throw new VersionConflictError();
+    this.#notes.set(key, structuredClone(note));
+  }
+
+  async deleteSession(clinicId: string, sessionId: string): Promise<number> {
+    const key = this.#key(clinicId, sessionId);
+    const removed = (this.#segments.get(key)?.length ?? 0) + (this.#notes.has(key) ? 1 : 0);
+    this.#segments.delete(key);
+    this.#notes.delete(key);
+    return removed;
+  }
+
+  async purgeExpired(clinicId: string, nowMs: number, limit: number): Promise<number> {
+    let removed = 0;
+    for (const [key, list] of this.#segments) {
+      if (!key.startsWith(`${clinicId}/`)) continue;
+      const keep: StoredSegment[] = [];
+      for (const s of list) {
+        if (s.deleteAfterMs <= nowMs && removed < limit) removed += 1;
+        else keep.push(s);
+      }
+      this.#segments.set(key, keep);
+    }
+    for (const [key, note] of this.#notes) {
+      if (key.startsWith(`${clinicId}/`) && note.deleteAfterMs <= nowMs && removed < limit) {
+        this.#notes.delete(key);
+        removed += 1;
+      }
+    }
+    return removed;
+  }
+}
+
+/** Demo mode: no speech service; the scribe screen plays a scripted transcript instead. */
+export class DemoSpeechTokenIssuer implements SpeechTokenIssuer {
+  readonly provider = 'DEMO' as const;
+  constructor(private readonly clock: () => number) {}
+  async issue(): Promise<SpeechToken> {
+    return { provider: 'DEMO', url: null, expiresAtMs: this.clock() + 60_000 };
   }
 }
