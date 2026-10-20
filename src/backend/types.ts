@@ -4,6 +4,7 @@ import type { DemoScenario } from '../../lib/dentally/mock.ts';
 import type { PatientSummary } from '../../lib/dentally/types.ts';
 import type {
   ActiveSessionResponse,
+  ClinicSetupResponse,
   ConfirmPatientResponse,
   DiaryResponse,
   MeResponse,
@@ -53,8 +54,33 @@ export interface AppBackend {
   getActiveSession(surgeryId: string | null, practitionerId: string): Promise<ActiveSessionResponse>;
   /** Name and date of birth of the patient locked to a session (by the locked patient ID). */
   getSessionPatient(sessionId: string): Promise<PatientSummary>;
+  /** First run only: creates the clinic and makes the app's owner its practice manager. */
+  bootstrapClinic(clinicName: string): Promise<{ clinicId: string }>;
+  getClinicSetup(): Promise<ClinicSetupResponse>;
+  saveClinicians(clinicians: ClinicianChoice[]): Promise<ClinicSetupResponse>;
+  saveSurgeries(surgeries: SurgeryChoice[]): Promise<ClinicSetupResponse>;
+  saveStaffProfile(profile: StaffProfileInput): Promise<ClinicSetupResponse>;
   /** Present only in demo mode. */
   readonly demo?: DemoControls;
+}
+
+export interface ClinicianChoice {
+  practitionerId: string;
+  clinicianType: 'DENTIST' | 'THERAPIST' | 'HYGIENIST' | 'OTHER';
+  active: boolean;
+}
+
+export interface SurgeryChoice {
+  roomId: string;
+  active: boolean;
+}
+
+export interface StaffProfileInput {
+  email: string;
+  displayName: string;
+  roles: string[];
+  clinicianId: string | null;
+  active: boolean;
 }
 
 export interface DemoUser {

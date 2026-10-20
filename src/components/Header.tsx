@@ -13,10 +13,12 @@ export interface HeaderProps {
   dentally: { tone: Tone; label: string };
   /** Hidden while a session is open: the clinician and surgery cannot change under a locked patient. */
   onChangeSetup?: () => void;
+  /** Shown to practice managers. */
+  onOpenAdmin?: () => void;
   onSignOut: () => void;
 }
 
-export function Header({ user, clinicianName, surgeryName, now, timeZone, dentally, onChangeSetup, onSignOut }: HeaderProps) {
+export function Header({ user, clinicianName, surgeryName, now, timeZone, dentally, onChangeSetup, onOpenAdmin, onSignOut }: HeaderProps) {
   return (
     <header className="topbar">
       <div className="brand">
@@ -53,6 +55,11 @@ export function Header({ user, clinicianName, surgeryName, now, timeZone, dental
 
       <div className="topbar-user">
         <span className="user-name">{user.displayName}</span>
+        {onOpenAdmin && (
+          <button type="button" className="link-button" onClick={onOpenAdmin}>
+            Clinic setup
+          </button>
+        )}
         <button type="button" className="link-button" onClick={onSignOut}>
           Sign out
         </button>

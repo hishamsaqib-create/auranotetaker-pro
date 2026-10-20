@@ -23,17 +23,23 @@ import { KNOWN_APPOINTMENT_STATES } from '../lib/core/appointments.ts';
 import { isTerminal } from '../lib/core/session.ts';
 import { DentallyClient } from '../lib/dentally/client.ts';
 import { createLiveDentallyService } from '../lib/dentally/service.ts';
+import type { BootstrapCaller, ClinicRegistry, ClinicRow } from '../lib/server/bootstrap.ts';
+import { bootstrapClinic } from '../lib/server/bootstrap.ts';
 import { AppError } from '../lib/server/errors.ts';
 import type {
   AppRole,
   AuditSink,
+  ClinicAdminStore,
   ClinicConfig,
   ClinicDirectory,
   ClinicianEntry,
+  ClinicianRecord,
   HandlerDeps,
   SessionRepository,
   StaffContext,
+  StaffProfileRecord,
   SurgeryEntry,
+  SurgeryRecord,
 } from '../lib/server/ports.ts';
 import { APP_ROLES, VersionConflictError } from '../lib/server/ports.ts';
 
@@ -46,7 +52,7 @@ interface EntityApi {
   updateMany(query: Record<string, unknown>, data: Record<string, Record<string, unknown>>): Promise<{ updated?: number } | null>;
 }
 export interface Base44Like {
-  auth: { me(): Promise<{ email?: string | null; full_name?: string | null } | null> };
+  auth: { me(): Promise<{ email?: string | null; full_name?: string | null; role?: string | null } | null> };
   asServiceRole: { entities: Record<string, EntityApi> };
 }
 
@@ -115,7 +121,7 @@ const msToIso = (v: number | null): string | null => (v === null ? null : new Da
 export async function resolveClinic(base44: Base44Like, readSecret: SecretReader): Promise<ClinicConfig> {
   const clinicKey = requireSecret(readSecret, 'CLINIC_KEY');
   const clinic = rows(await base44.asServiceRole.entities.Clinic!.filter({ slug: clinicKey, status: 'ACTIVE' }, { limit: 1 }))[0];
-  if (!clinic?.id) throw new AppError('INTERNAL', 'Clinic is not configured.');
+  if (!clinic?.id) throw new AppError('NOT_SET_UP', 'AuraNoteTaker has not been set up yet.');
   const settings = (clinic.settings ?? {}) as Record<string, unknown>;
   return {
     clinicId: clinic.id,
@@ -369,26 +375,145 @@ export class Base44AuditSink implements AuditSink {
   }
 }
 
-export class Base44ClinicDirectory implements ClinicDirectory {
+const CLINICIAN_TYPES = new Set(['DENTIST', 'THERAPIST', 'HYGIENIST', 'OTHER']);
+
+function rowToClinician(r: Row): ClinicianRecord {
+  const practitionerId = str(r.dentally_practitioner_id);
+  const displayName = str(r.display_name);
+  // A clinician without an ID or name would appear as "undefined" on the setup screen: refuse instead.
+  if (!practitionerId || !displayName || r.active === undefined) throw new AppError('INTERNAL', UNREADABLE);
+  return {
+    practitionerId,
+    displayName,
+    clinicianType: (CLINICIAN_TYPES.has(String(r.clinician_type)) ? r.clinician_type : 'OTHER') as ClinicianEntry['clinicianType'],
+    dentallyUserId: str(r.dentally_user_id),
+    active: r.active === true,
+  };
+}
+
+function rowToSurgery(r: Row): SurgeryRecord {
+  const surgeryId = str(r.id);
+  const name = str(r.name);
+  if (!surgeryId || !name || r.active === undefined) throw new AppError('INTERNAL', UNREADABLE);
+  return { surgeryId, name, roomId: str(r.dentally_room_id), active: r.active === true };
+}
+
+function rowToStaff(r: Row): StaffProfileRecord {
+  const email = str(r.user_email);
+  const displayName = str(r.display_name);
+  if (!email || !displayName || !Array.isArray(r.app_roles)) throw new AppError('INTERNAL', UNREADABLE);
+  return {
+    email,
+    displayName,
+    roles: r.app_roles.filter((x): x is AppRole => (APP_ROLES as readonly unknown[]).includes(x)),
+    clinicianId: str(r.clinician_id),
+    active: r.active === true,
+  };
+}
+
+export class Base44ClinicDirectory implements ClinicDirectory, ClinicAdminStore {
   constructor(private readonly base44: Base44Like) {}
 
+  private entity(name: 'Clinician' | 'Surgery' | 'StaffProfile'): EntityApi {
+    return this.base44.asServiceRole.entities[name]!;
+  }
+
   async listClinicians(clinicId: string): Promise<ClinicianEntry[]> {
-    return (await allRows(this.base44.asServiceRole.entities.Clinician!, { clinic_id: clinicId, active: true })).map((r) => {
-      const practitionerId = str(r.dentally_practitioner_id);
-      const displayName = str(r.display_name);
-      // A clinician without an ID or name would appear as "undefined" on the setup screen: refuse instead.
-      if (!practitionerId || !displayName) throw new AppError('INTERNAL', UNREADABLE);
-      return { practitionerId, displayName, clinicianType: (str(r.clinician_type) ?? 'OTHER') as ClinicianEntry['clinicianType'] };
-    });
+    return (await this.listClinicianRecords(clinicId)).filter((c) => c.active).map(({ practitionerId, displayName, clinicianType }) => ({ practitionerId, displayName, clinicianType }));
   }
 
   async listSurgeries(clinicId: string): Promise<SurgeryEntry[]> {
-    return (await allRows(this.base44.asServiceRole.entities.Surgery!, { clinic_id: clinicId, active: true })).map((r) => {
-      const surgeryId = str(r.id);
-      const name = str(r.name);
-      if (!surgeryId || !name) throw new AppError('INTERNAL', UNREADABLE);
-      return { surgeryId, name, roomId: str(r.dentally_room_id) };
+    return (await this.listSurgeryRecords(clinicId)).filter((x) => x.active).map(({ surgeryId, name, roomId }) => ({ surgeryId, name, roomId }));
+  }
+
+  async listClinicianRecords(clinicId: string): Promise<ClinicianRecord[]> {
+    return (await allRows(this.entity('Clinician'), { clinic_id: clinicId })).map(rowToClinician);
+  }
+
+  async saveClinicianRecords(clinicId: string, records: readonly ClinicianRecord[]): Promise<void> {
+    for (const r of records) {
+      const data = compact({
+        clinic_id: clinicId,
+        dentally_practitioner_id: r.practitionerId,
+        dentally_user_id: r.dentallyUserId,
+        display_name: r.displayName,
+        clinician_type: r.clinicianType,
+        active: r.active,
+      });
+      const existing = await allRows(this.entity('Clinician'), { clinic_id: clinicId, dentally_practitioner_id: r.practitionerId });
+      if (existing.length > 1) throw new AppError('INTERNAL', UNREADABLE);
+      if (existing[0]?.id) await this.entity('Clinician').update(existing[0].id, data);
+      else await this.entity('Clinician').create(data);
+    }
+  }
+
+  async listSurgeryRecords(clinicId: string): Promise<SurgeryRecord[]> {
+    return (await allRows(this.entity('Surgery'), { clinic_id: clinicId })).map(rowToSurgery);
+  }
+
+  async saveSurgeryRecords(clinicId: string, records: readonly Omit<SurgeryRecord, 'surgeryId'>[]): Promise<void> {
+    for (const r of records) {
+      const data = compact({ clinic_id: clinicId, name: r.name, dentally_room_id: r.roomId, active: r.active });
+      const existing = r.roomId ? await allRows(this.entity('Surgery'), { clinic_id: clinicId, dentally_room_id: r.roomId }) : [];
+      if (existing.length > 1) throw new AppError('INTERNAL', UNREADABLE);
+      if (existing[0]?.id) await this.entity('Surgery').update(existing[0].id, data);
+      else await this.entity('Surgery').create(data);
+    }
+  }
+
+  async listStaff(clinicId: string): Promise<StaffProfileRecord[]> {
+    return (await allRows(this.entity('StaffProfile'), { clinic_id: clinicId })).map(rowToStaff);
+  }
+
+  async saveStaff(clinicId: string, record: StaffProfileRecord): Promise<void> {
+    const data = compact({
+      clinic_id: clinicId,
+      user_email: record.email,
+      display_name: record.displayName,
+      app_roles: record.roles,
+      clinician_id: record.clinicianId,
+      active: record.active,
     });
+    const existing = await allRows(this.entity('StaffProfile'), { clinic_id: clinicId, user_email: record.email });
+    if (existing.length > 1) throw new AppError('INTERNAL', UNREADABLE);
+    // A cleared clinician link must be removed, not left behind by an update that omits it.
+    if (existing[0]?.id) await this.entity('StaffProfile').update(existing[0].id, { ...data, clinician_id: record.clinicianId ?? '' });
+    else await this.entity('StaffProfile').create(data);
+  }
+}
+
+/** Clinic creation for first-run setup (bootstrapClinic). */
+export class Base44ClinicRegistry implements ClinicRegistry {
+  constructor(private readonly base44: Base44Like) {}
+
+  async findBySlug(slug: string): Promise<ClinicRow[]> {
+    return (await allRows(this.base44.asServiceRole.entities.Clinic!, { slug })).map((r) => {
+      const id = str(r.id);
+      const createdAtMs = isoToMs(r.created_date);
+      if (!id || createdAtMs === null) throw new AppError('INTERNAL', UNREADABLE);
+      return { id, slug, status: String(r.status ?? ''), createdAtMs };
+    });
+  }
+
+  async create(input: { name: string; slug: string; timeZone: string }): Promise<ClinicRow> {
+    const r = await this.base44.asServiceRole.entities.Clinic!.create({
+      name: input.name,
+      slug: input.slug,
+      time_zone: input.timeZone,
+      status: 'ACTIVE',
+      tooth_notation: 'PALMER',
+    });
+    const id = str(r.id);
+    if (!id) throw new AppError('INTERNAL', UNREADABLE);
+    return { id, slug: input.slug, status: 'ACTIVE', createdAtMs: isoToMs(r.created_date) ?? Date.now() };
+  }
+
+  async suspend(id: string): Promise<void> {
+    await this.base44.asServiceRole.entities.Clinic!.update(id, { status: 'SUSPENDED' });
+  }
+
+  async createStaffProfile(clinicId: string, record: StaffProfileRecord): Promise<void> {
+    await new Base44ClinicDirectory(this.base44).saveStaff(clinicId, record);
   }
 }
 
@@ -409,6 +534,7 @@ export async function buildDeps(base44: Base44Like, clinic: ClinicConfig, readSe
     sessions: new Base44SessionRepository(base44),
     audit: new Base44AuditSink(base44),
     directory: new Base44ClinicDirectory(base44),
+    admin: new Base44ClinicDirectory(base44),
   };
 }
 
@@ -442,6 +568,32 @@ export async function runHandler<I, O>(
     const input = (await req.json().catch(() => ({}))) as I;
     const deps = await buildDeps(base44, clinic, readSecret);
     return jsonResponse(await handler(ctx, deps, input));
+  } catch (err) {
+    return errorResponse(err);
+  }
+}
+
+/** First-run setup: creates the clinic and makes the app's owner its first practice manager. */
+export async function runBootstrap(req: Request, createClient: (req: Request) => Base44Like, readSecret: SecretReader): Promise<Response> {
+  try {
+    if (req.method !== 'POST') return jsonResponse({ error: { code: 'VALIDATION', message: 'POST only', details: {} } }, 405);
+    const base44 = createClient(req);
+    const me = await base44.auth.me().catch(() => null);
+    const email = str(me?.email)?.toLowerCase();
+    if (!email) throw new AppError('UNAUTHENTICATED', 'Please sign in.');
+    const caller: BootstrapCaller = { email, displayName: str(me?.full_name) ?? email, isAppAdmin: me?.role === 'admin' };
+    const input = (await req.json().catch(() => ({}))) as { clinicName?: unknown };
+    const result = await bootstrapClinic(
+      caller,
+      {
+        registry: new Base44ClinicRegistry(base44),
+        audit: new Base44AuditSink(base44),
+        clock: () => Date.now(),
+        clinicKey: requireSecret(readSecret, 'CLINIC_KEY'),
+      },
+      input,
+    );
+    return jsonResponse(result);
   } catch (err) {
     return errorResponse(err);
   }

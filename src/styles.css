@@ -1164,3 +1164,88 @@ input {
     padding: 24px 20px 28px;
   }
 }
+
+/* ------------------------------------------------------------------ setup forms and clinic setup */
+
+.field {
+  display: grid;
+  gap: 6px;
+  margin: 0 0 16px;
+  border: 0;
+  padding: 0;
+}
+
+.field-label {
+  font-weight: 600;
+  color: var(--ink-2);
+}
+
+.input,
+.admin select,
+.field select {
+  font: inherit;
+  padding: 10px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-s);
+  background: var(--surface);
+  color: var(--ink);
+  max-width: 100%;
+}
+
+.admin h2 {
+  font-size: 22px;
+  margin: 0 0 6px;
+}
+
+.admin-list {
+  list-style: none;
+  margin: 0 0 16px;
+  padding: 0;
+  border-top: 1px solid var(--line);
+}
+
+.admin-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px 16px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.admin-row.is-muted {
+  color: var(--ink-3);
+}
+
+.admin-check {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  margin-right: 16px;
+  min-height: 32px;
+}
+
+.admin-check input {
+  width: 20px;
+  height: 20px;
+}
+
+.admin-sub {
+  color: var(--ink-3);
+  font-size: 15px;
+}
+
+.admin-form {
+  margin-top: 8px;
+  padding: 20px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-m);
+  background: var(--surface);
+  max-width: 640px;
+}
+
+.admin-form h3 {
+  margin: 0 0 14px;
+}

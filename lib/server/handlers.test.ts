@@ -12,8 +12,12 @@ import {
   getDentallyStatus,
   getDiary,
   getPatientSummary,
+  getClinicSetup,
   getSessionPatient,
   recordConsent,
+  saveClinicians,
+  saveStaffProfile,
+  saveSurgeries,
 } from './handlers.ts';
 import { InMemoryAuditSink, InMemorySessionRepository, StaticClinicDirectory } from './memory.ts';
 import type { HandlerDeps, SessionRepository, StaffContext } from './ports.ts';
@@ -37,6 +41,12 @@ let mock: MockDentallyService;
 function deps(scenario: DemoScenario = 'normal', opts: { clock?: () => number; anchorMs?: number; repo?: SessionRepository } = {}): HandlerDeps {
   const clock = opts.clock ?? (() => NOW);
   mock = new MockDentallyService({ clock, scenario, anchorMs: opts.anchorMs ?? NOW });
+  const directory = new StaticClinicDirectory(
+    CLINIC,
+    DEMO_PRACTITIONERS.map((p) => ({ practitionerId: p.practitionerId, displayName: p.displayName, clinicianType: 'DENTIST' as const })),
+    DEMO_ROOMS.map((r, i) => ({ surgeryId: `surgery-${i + 1}`, name: r.name, roomId: r.roomId })),
+    [{ email: 'pm@aura.test', displayName: 'Practice Manager', roles: ['CLINIC_ADMIN'], clinicianId: null, active: true }],
+  );
   return {
     clock,
     newId: () => `session-${++ids}`,
@@ -44,11 +54,8 @@ function deps(scenario: DemoScenario = 'normal', opts: { clock?: () => number; a
     dentally: mock,
     sessions: opts.repo ?? sessions,
     audit: auditSink,
-    directory: new StaticClinicDirectory(
-      CLINIC,
-      DEMO_PRACTITIONERS.map((p) => ({ practitionerId: p.practitionerId, displayName: p.displayName, clinicianType: 'DENTIST' as const })),
-      DEMO_ROOMS.map((r, i) => ({ surgeryId: `surgery-${i + 1}`, name: r.name, roomId: r.roomId })),
-    ),
+    directory,
+    admin: directory,
   };
 }
 
@@ -450,5 +457,42 @@ describe('getDentallyStatus', () => {
   it('reports connected and unavailable without patient data', async () => {
     expect((await getDentallyStatus(nurse, deps())).status).toBe('CONNECTED');
     expect((await getDentallyStatus(nurse, deps('dentally-offline'))).status).toBe('UNAVAILABLE');
+  });
+});
+
+describe('clinic setup', () => {
+  it('is for the practice manager only', async () => {
+    await expectAppError(getClinicSetup(nurse, deps()), 'FORBIDDEN');
+    const setup = await getClinicSetup(manager, deps());
+    expect(setup.dentally?.practitioners.map((p) => p.practitionerId)).toEqual(['DEMO-PR1', 'DEMO-PR2', 'DEMO-PR3']);
+    expect(setup.clinicians).toHaveLength(3);
+  });
+
+  it('only configures clinicians Dentally knows, takes their names from Dentally, and can switch one off', async () => {
+    const d = deps();
+    await expectAppError(saveClinicians(manager, d, { clinicians: [{ practitionerId: 'MADE-UP', clinicianType: 'DENTIST', active: true }] }), 'VALIDATION');
+    const r = await saveClinicians(manager, d, { clinicians: [{ practitionerId: 'DEMO-PR3', clinicianType: 'HYGIENIST', active: false }] });
+    expect(r.clinicians.find((c) => c.practitionerId === 'DEMO-PR3')).toMatchObject({ displayName: 'Emma Reid', clinicianType: 'HYGIENIST', active: false });
+    expect((await d.directory.listClinicians(CLINIC)).map((c) => c.practitionerId)).not.toContain('DEMO-PR3');
+    expect(auditSink.events.at(-1)).toMatchObject({ action: 'CONFIG_CHANGED', details: { entity: 'CLINICIAN', change: 'SAVED', count: 1 } });
+  });
+
+  it('only configures surgeries for rooms Dentally knows', async () => {
+    const d = deps();
+    await expectAppError(saveSurgeries(manager, d, { surgeries: [{ roomId: 'NO-ROOM', active: true }] }), 'VALIDATION');
+    const r = await saveSurgeries(manager, d, { surgeries: [{ roomId: 'DEMO-R2', active: false }] });
+    expect(r.surgeries.find((s) => s.roomId === 'DEMO-R2')?.active).toBe(false);
+  });
+
+  it('adds staff with grantable roles only, and never removes the last practice manager', async () => {
+    const d = deps();
+    const added = await saveStaffProfile(manager, d, {
+      email: ' New.Nurse@Aura.test ', displayName: 'New Nurse', roles: ['NURSE'], clinicianId: null, active: true,
+    });
+    expect(added.staff.find((x) => x.email === 'new.nurse@aura.test')).toMatchObject({ roles: ['NURSE'], active: true });
+    await expectAppError(saveStaffProfile(manager, d, { email: 'x@aura.test', displayName: 'X', roles: ['SUPER_ADMIN'], active: true }), 'VALIDATION');
+    await expectAppError(saveStaffProfile(manager, d, { email: 'x@aura.test', displayName: 'X', roles: ['DENTIST'], clinicianId: 'NOT-SET-UP', active: true }), 'VALIDATION');
+    await expectAppError(saveStaffProfile(manager, d, { email: 'pm@aura.test', displayName: 'Practice Manager', roles: ['NURSE'], active: true }), 'VALIDATION');
+    await expectAppError(saveStaffProfile(nurse, d, { email: 'y@aura.test', displayName: 'Y', roles: ['NURSE'], active: true }), 'FORBIDDEN');
   });
 });

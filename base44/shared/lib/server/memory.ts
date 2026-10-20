@@ -5,7 +5,17 @@
 import type { AuditEvent } from '../core/audit.ts';
 import type { ScribeSession } from '../core/session.ts';
 import { isTerminal } from '../core/session.ts';
-import type { AuditSink, ClinicDirectory, ClinicianEntry, SessionRepository, SurgeryEntry } from './ports.ts';
+import type {
+  AuditSink,
+  ClinicAdminStore,
+  ClinicDirectory,
+  ClinicianEntry,
+  ClinicianRecord,
+  SessionRepository,
+  StaffProfileRecord,
+  SurgeryEntry,
+  SurgeryRecord,
+} from './ports.ts';
 import { VersionConflictError } from './ports.ts';
 
 export class InMemorySessionRepository implements SessionRepository {
@@ -69,22 +79,68 @@ export class InMemoryAuditSink implements AuditSink {
   }
 }
 
-export class StaticClinicDirectory implements ClinicDirectory {
+/**
+ * Clinic configuration held in memory (demo mode and tests): the directory the clinical handlers read,
+ * and the store the setup handlers write.
+ */
+export class StaticClinicDirectory implements ClinicDirectory, ClinicAdminStore {
   readonly #clinicId: string;
-  readonly #clinicians: ClinicianEntry[];
-  readonly #surgeries: SurgeryEntry[];
+  #clinicians: ClinicianRecord[];
+  #surgeries: SurgeryRecord[];
+  #staff: StaffProfileRecord[];
+  #nextSurgery = 1;
 
-  constructor(clinicId: string, clinicians: ClinicianEntry[], surgeries: SurgeryEntry[]) {
+  constructor(clinicId: string, clinicians: ClinicianEntry[], surgeries: SurgeryEntry[], staff: StaffProfileRecord[] = []) {
     this.#clinicId = clinicId;
-    this.#clinicians = clinicians;
-    this.#surgeries = surgeries;
+    this.#clinicians = clinicians.map((c) => ({ ...c, dentallyUserId: null, active: true }));
+    this.#surgeries = surgeries.map((s) => ({ ...s, active: true }));
+    this.#staff = staff.map((x) => structuredClone(x));
   }
 
   async listClinicians(clinicId: string): Promise<ClinicianEntry[]> {
-    return clinicId === this.#clinicId ? this.#clinicians.map((c) => ({ ...c })) : [];
+    if (clinicId !== this.#clinicId) return [];
+    return this.#clinicians.filter((c) => c.active).map(({ practitionerId, displayName, clinicianType }) => ({ practitionerId, displayName, clinicianType }));
   }
 
   async listSurgeries(clinicId: string): Promise<SurgeryEntry[]> {
+    if (clinicId !== this.#clinicId) return [];
+    return this.#surgeries.filter((s) => s.active).map(({ surgeryId, name, roomId }) => ({ surgeryId, name, roomId }));
+  }
+
+  async listClinicianRecords(clinicId: string): Promise<ClinicianRecord[]> {
+    return clinicId === this.#clinicId ? this.#clinicians.map((c) => ({ ...c })) : [];
+  }
+
+  async saveClinicianRecords(clinicId: string, records: readonly ClinicianRecord[]): Promise<void> {
+    if (clinicId !== this.#clinicId) throw new Error('Unknown clinic');
+    for (const r of records) {
+      const i = this.#clinicians.findIndex((c) => c.practitionerId === r.practitionerId);
+      if (i >= 0) this.#clinicians[i] = { ...r };
+      else this.#clinicians.push({ ...r });
+    }
+  }
+
+  async listSurgeryRecords(clinicId: string): Promise<SurgeryRecord[]> {
     return clinicId === this.#clinicId ? this.#surgeries.map((s) => ({ ...s })) : [];
+  }
+
+  async saveSurgeryRecords(clinicId: string, records: readonly Omit<SurgeryRecord, 'surgeryId'>[]): Promise<void> {
+    if (clinicId !== this.#clinicId) throw new Error('Unknown clinic');
+    for (const r of records) {
+      const i = this.#surgeries.findIndex((s) => s.roomId !== null && s.roomId === r.roomId);
+      if (i >= 0) this.#surgeries[i] = { ...this.#surgeries[i]!, name: r.name, active: r.active };
+      else this.#surgeries.push({ surgeryId: `SURGERY-${this.#nextSurgery++}`, name: r.name, roomId: r.roomId, active: r.active });
+    }
+  }
+
+  async listStaff(clinicId: string): Promise<StaffProfileRecord[]> {
+    return clinicId === this.#clinicId ? this.#staff.map((x) => structuredClone(x)) : [];
+  }
+
+  async saveStaff(clinicId: string, record: StaffProfileRecord): Promise<void> {
+    if (clinicId !== this.#clinicId) throw new Error('Unknown clinic');
+    const i = this.#staff.findIndex((x) => x.email === record.email);
+    if (i >= 0) this.#staff[i] = structuredClone(record);
+    else this.#staff.push(structuredClone(record));
   }
 }

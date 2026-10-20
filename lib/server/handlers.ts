@@ -16,9 +16,9 @@ import type { ConfirmationMethod, ScribeSession, SessionEvent } from '../core/se
 import { createSession, isTerminal, transition } from '../core/session.ts';
 import { zonedDateString } from '../core/time.ts';
 import { DentallyError } from '../dentally/client.ts';
-import type { PatientSummary } from '../dentally/types.ts';
+import type { PatientSummary, PractitionerSummary, RoomSummary } from '../dentally/types.ts';
 import { AppError } from './errors.ts';
-import type { AppRole, ClinicianEntry, HandlerDeps, StaffContext, SurgeryEntry } from './ports.ts';
+import type { AppRole, ClinicianEntry, ClinicianRecord, HandlerDeps, StaffContext, StaffProfileRecord, SurgeryEntry, SurgeryRecord } from './ports.ts';
 import { APP_ROLES, VersionConflictError } from './ports.ts';
 
 export const CLINICAL_ROLES: readonly AppRole[] = ['DENTIST', 'THERAPIST', 'HYGIENIST', 'NURSE'];
@@ -92,6 +92,16 @@ export type SessionRestriction = 'OTHER_SURGERY' | 'PREVIOUS_DAY' | 'NOT_MEMBER'
 export interface ActiveSessionResponse {
   session: ScribeSession | null;
   restriction: SessionRestriction | null;
+}
+
+export interface ClinicSetupResponse {
+  clinicName: string;
+  /** Practitioners and rooms as Dentally lists them; null when Dentally could not be reached. No patient data. */
+  dentally: { practitioners: PractitionerSummary[]; rooms: RoomSummary[] } | null;
+  dentallyError: string | null;
+  clinicians: ClinicianRecord[];
+  surgeries: SurgeryRecord[];
+  staff: StaffProfileRecord[];
 }
 
 export interface DentallyStatusResponse {
@@ -717,4 +727,129 @@ export async function getDentallyStatus(ctx: StaffContext, deps: HandlerDeps): P
     const auth = err instanceof DentallyError && (err.kind === 'AUTH' || err.kind === 'CONFIG');
     return { status: auth ? 'AUTH_ERROR' : 'UNAVAILABLE', mode: deps.dentally.mode, latencyMs: null, checkedAt };
   }
+}
+
+// ---------------------------------------------------------------------------
+// Clinic setup (practice manager). Configuration only: no patient data is read or written here.
+
+/** Roles a practice manager can grant. SUPER_ADMIN is a platform role and is never granted from a clinic. */
+export const GRANTABLE_ROLES: readonly AppRole[] = ['CLINIC_ADMIN', 'DENTIST', 'THERAPIST', 'HYGIENIST', 'NURSE', 'AUDITOR'];
+const CLINICIAN_TYPES: readonly ClinicianEntry['clinicianType'][] = ['DENTIST', 'THERAPIST', 'HYGIENIST', 'OTHER'];
+const EMAIL = /^[^\s@]{1,64}@[^\s@]{1,255}\.[^\s@]{2,63}$/;
+
+function reqName(v: unknown, field: string): string {
+  if (typeof v !== 'string') throw new AppError('VALIDATION', `Missing or invalid ${field}.`);
+  const name = v.trim().replace(/\s+/g, ' ');
+  // eslint-disable-next-line no-control-regex
+  if (name.length < 1 || name.length > 80 || /[\u0000-\u001f\u007f]/.test(name)) throw new AppError('VALIDATION', `Missing or invalid ${field}.`);
+  return name;
+}
+
+function reqList(v: unknown, field: string, max = 200): unknown[] {
+  if (!Array.isArray(v) || v.length > max) throw new AppError('VALIDATION', `Missing or invalid ${field}.`);
+  return v;
+}
+
+async function clinicSetup(deps: HandlerDeps): Promise<ClinicSetupResponse> {
+  const clinicId = deps.clinic.clinicId;
+  let dentally: ClinicSetupResponse['dentally'] = null;
+  let dentallyError: string | null = null;
+  try {
+    const [practitioners, rooms] = await callDentally(() => Promise.all([deps.dentally.listPractitioners(), deps.dentally.listRooms()]));
+    dentally = { practitioners, rooms };
+  } catch (err) {
+    // Staff can still be managed while Dentally is down; clinicians and surgeries cannot be added.
+    if (!(err instanceof AppError)) throw err;
+    dentallyError = err.message;
+  }
+  const [clinicians, surgeries, staff] = await Promise.all([
+    deps.admin.listClinicianRecords(clinicId),
+    deps.admin.listSurgeryRecords(clinicId),
+    deps.admin.listStaff(clinicId),
+  ]);
+  return { clinicName: deps.clinic.name, dentally, dentallyError, clinicians, surgeries, staff };
+}
+
+/** Everything the setup screen shows: Dentally's practitioners and rooms, and what is configured. */
+export async function getClinicSetup(ctx: StaffContext, deps: HandlerDeps): Promise<ClinicSetupResponse> {
+  await requireRole(ctx, deps, ['CLINIC_ADMIN'], 'getClinicSetup');
+  return clinicSetup(deps);
+}
+
+/**
+ * Chooses which Dentally practitioners are clinicians in AuraNoteTaker. Names come from Dentally, and
+ * every practitioner is checked against Dentally's own list, so a made-up ID cannot be configured.
+ */
+export async function saveClinicians(ctx: StaffContext, deps: HandlerDeps, input: { clinicians?: unknown }): Promise<ClinicSetupResponse> {
+  await requireRole(ctx, deps, ['CLINIC_ADMIN'], 'saveClinicians');
+  const items = reqList(input.clinicians, 'clinicians').map((raw) => {
+    const r = (raw ?? {}) as Record<string, unknown>;
+    return {
+      practitionerId: reqId(r.practitionerId, 'clinician'),
+      clinicianType: reqEnum(r.clinicianType, CLINICIAN_TYPES, 'clinician type'),
+      active: reqBool(r.active, 'active'),
+    };
+  });
+  const known = new Map((await callDentally(() => deps.dentally.listPractitioners())).map((p) => [p.practitionerId, p]));
+  const records: ClinicianRecord[] = items.map((i) => {
+    const p = known.get(i.practitionerId);
+    if (!p) throw new AppError('VALIDATION', 'One of those clinicians is not in Dentally. Refresh the page and try again.');
+    return { practitionerId: p.practitionerId, displayName: p.displayName, clinicianType: i.clinicianType, dentallyUserId: p.userId, active: i.active };
+  });
+  await deps.admin.saveClinicianRecords(deps.clinic.clinicId, records);
+  await auditAfterChange(ctx, deps, 'CONFIG_CHANGED', { details: { entity: 'CLINICIAN', change: 'SAVED', count: records.length } });
+  return clinicSetup(deps);
+}
+
+/** Chooses which Dentally rooms are surgeries in AuraNoteTaker, checked against Dentally's own list. */
+export async function saveSurgeries(ctx: StaffContext, deps: HandlerDeps, input: { surgeries?: unknown }): Promise<ClinicSetupResponse> {
+  await requireRole(ctx, deps, ['CLINIC_ADMIN'], 'saveSurgeries');
+  const items = reqList(input.surgeries, 'surgeries').map((raw) => {
+    const r = (raw ?? {}) as Record<string, unknown>;
+    return { roomId: reqId(r.roomId, 'room'), active: reqBool(r.active, 'active') };
+  });
+  const known = new Map((await callDentally(() => deps.dentally.listRooms())).map((room) => [room.roomId, room]));
+  const records = items.map((i) => {
+    const room = known.get(i.roomId);
+    if (!room) throw new AppError('VALIDATION', 'One of those surgeries is not in Dentally. Refresh the page and try again.');
+    return { roomId: room.roomId, name: room.name, active: i.active };
+  });
+  await deps.admin.saveSurgeryRecords(deps.clinic.clinicId, records);
+  await auditAfterChange(ctx, deps, 'CONFIG_CHANGED', { details: { entity: 'SURGERY', change: 'SAVED', count: records.length } });
+  return clinicSetup(deps);
+}
+
+/**
+ * Adds or changes a staff member's access. Their roles exist only here: the Base44 user record is never
+ * trusted for roles. The last active practice manager cannot remove their own access.
+ */
+export async function saveStaffProfile(
+  ctx: StaffContext,
+  deps: HandlerDeps,
+  input: { email?: unknown; displayName?: unknown; roles?: unknown; clinicianId?: unknown; active?: unknown },
+): Promise<ClinicSetupResponse> {
+  await requireRole(ctx, deps, ['CLINIC_ADMIN'], 'saveStaffProfile');
+  if (typeof input.email !== 'string' || !EMAIL.test(input.email.trim())) throw new AppError('VALIDATION', 'Enter a valid email address.');
+  const email = input.email.trim().toLowerCase();
+  const displayName = reqName(input.displayName, 'name');
+  const roles = [...new Set(reqList(input.roles, 'roles', GRANTABLE_ROLES.length).map((r) => reqEnum(r, GRANTABLE_ROLES, 'role')))];
+  if (roles.length === 0) throw new AppError('VALIDATION', 'Choose at least one role.');
+  const active = reqBool(input.active, 'active');
+  const clinicianId = optId(input.clinicianId, 'clinician');
+  if (clinicianId !== null && !(await deps.directory.listClinicians(deps.clinic.clinicId)).some((c) => c.practitionerId === clinicianId)) {
+    throw new AppError('VALIDATION', 'That clinician is not set up in AuraNoteTaker.');
+  }
+
+  const staff = await deps.admin.listStaff(deps.clinic.clinicId);
+  const before = staff.find((x) => x.email === email);
+  const record: StaffProfileRecord = { email, displayName, roles, clinicianId, active };
+  const after = [...staff.filter((x) => x.email !== email), record];
+  if (!after.some((x) => x.active && x.roles.includes('CLINIC_ADMIN'))) {
+    throw new AppError('VALIDATION', 'At least one active practice manager must keep access to setup.');
+  }
+  await deps.admin.saveStaff(deps.clinic.clinicId, record);
+  await auditAfterChange(ctx, deps, 'CONFIG_CHANGED', {
+    details: { entity: 'STAFF_PROFILE', change: before ? 'UPDATED' : 'CREATED', count: 1 },
+  });
+  return clinicSetup(deps);
 }

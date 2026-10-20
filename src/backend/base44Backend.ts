@@ -86,5 +86,10 @@ export function createBase44Backend(cfg: { appId: string; serverUrl?: string }):
     cancelSession: (sessionId, expectedVersion) => call('cancelSession', { sessionId, expectedVersion }),
     getActiveSession: (surgeryId, practitionerId) => call('getActiveSession', { surgeryId, practitionerId }),
     getSessionPatient: (sessionId) => call('getSessionPatient', { sessionId }),
+    bootstrapClinic: (clinicName) => call('bootstrapClinic', { clinicName }),
+    getClinicSetup: () => call('getClinicSetup'),
+    saveClinicians: (clinicians) => call('saveClinicians', { clinicians }),
+    saveSurgeries: (surgeries) => call('saveSurgeries', { surgeries }),
+    saveStaffProfile: (profile) => call('saveStaffProfile', { ...profile }),
   };
 }

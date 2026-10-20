@@ -70,6 +70,24 @@ Demo mode shows a permanent banner and lets you switch scenarios (normal day, do
    ```
 7. Seed configuration through the admin functions (Phase 1 issue P1-05): the Clinic row (its `slug` must equal `CLINIC_KEY`), staff profiles with roles, clinician mappings from Dentally practitioners, surgeries from Dentally rooms.
 
+### Deploying from a Mac (first time)
+
+The AuraNoteTaker app in Base44 has ID `6ad7288395750d0c318dc063` (in `.env.production`). Base44 cannot be reached from the cloud build environment, so deploys run from a computer that can. In Terminal:
+
+```bash
+git clone https://github.com/hishamsaqib-create/auranotetaker-pro.git
+cd auranotetaker-pro
+npm install
+npx base44 login     # shows a code to approve in the browser
+npx base44 link      # choose the existing app: AuraNoteTaker
+npm run build
+npx base44 deploy    # entities, functions and the site
+```
+
+Later deploys: `git pull && npm install && npm run build && npx base44 deploy`.
+
+After the first deploy, open the app, sign in with the account that owns it, and press **Set up AuraNoteTaker**. That creates the clinic and makes you its practice manager. Then, under **Clinic setup**: tick the clinicians and surgeries, and add staff (each person also needs an invitation to the app in Base44). To use the clinical screen yourself, edit your own entry to add the Dentist role and link your Dentally diary.
+
 ## 4. Configuration reference
 
 Frontend (Vite, build time, not secret):

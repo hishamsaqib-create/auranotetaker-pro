@@ -8,12 +8,16 @@ import {
   cancelSession,
   confirmPatient,
   getActiveSession,
+  getClinicSetup,
   getDiary,
   getMe,
   getPatientSummary,
   getSessionPatient,
   getSetupOptions,
   recordConsent,
+  saveClinicians,
+  saveStaffProfile,
+  saveSurgeries,
 } from '../../lib/server/handlers.ts';
 import { InMemoryAuditSink, InMemorySessionRepository, StaticClinicDirectory } from '../../lib/server/memory.ts';
 import type { AppRole, HandlerDeps, StaffContext } from '../../lib/server/ports.ts';
@@ -47,6 +51,16 @@ export function createDemoBackend(opts: DemoBackendOptions = {}): AppBackend {
   const audit = new InMemoryAuditSink();
   let ids = 0;
 
+  const directory = new StaticClinicDirectory(
+    DEMO_CLINIC_ID,
+    DEMO_PRACTITIONERS.map((p) => ({
+      practitionerId: p.practitionerId,
+      displayName: p.displayName,
+      clinicianType: p.practitionerId === 'DEMO-PR3' ? ('HYGIENIST' as const) : ('DENTIST' as const),
+    })),
+    DEMO_ROOMS.map((r, i) => ({ surgeryId: `DEMO-SURGERY-${i + 1}`, name: r.name, roomId: r.roomId })),
+    DEMO_USERS.map((u) => ({ email: u.email, displayName: u.displayName, roles: [...u.roles], clinicianId: u.clinicianId, active: true })),
+  );
   const deps: HandlerDeps = {
     clock,
     newId: () => (typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `demo-session-${++ids}`),
@@ -60,15 +74,8 @@ export function createDemoBackend(opts: DemoBackendOptions = {}): AppBackend {
     dentally: mock,
     sessions: new InMemorySessionRepository(),
     audit,
-    directory: new StaticClinicDirectory(
-      DEMO_CLINIC_ID,
-      DEMO_PRACTITIONERS.map((p) => ({
-        practitionerId: p.practitionerId,
-        displayName: p.displayName,
-        clinicianType: p.practitionerId === 'DEMO-PR3' ? ('HYGIENIST' as const) : ('DENTIST' as const),
-      })),
-      DEMO_ROOMS.map((r, i) => ({ surgeryId: `DEMO-SURGERY-${i + 1}`, name: r.name, roomId: r.roomId })),
-    ),
+    directory,
+    admin: directory,
   };
 
   let user: DemoUserRecord | null = null;
@@ -128,5 +135,12 @@ export function createDemoBackend(opts: DemoBackendOptions = {}): AppBackend {
     cancelSession: (sessionId, expectedVersion) => run(() => cancelSession(ctx(), deps, { sessionId, expectedVersion })),
     getActiveSession: (surgeryId, practitionerId) => run(() => getActiveSession(ctx(), deps, { surgeryId, practitionerId })),
     getSessionPatient: (sessionId) => run(() => getSessionPatient(ctx(), deps, { sessionId })),
+    bootstrapClinic: () => run(async () => {
+      throw new AppError('ALREADY_SET_UP', 'The demo clinic is already set up.');
+    }),
+    getClinicSetup: () => run(() => getClinicSetup(ctx(), deps)),
+    saveClinicians: (clinicians) => run(() => saveClinicians(ctx(), deps, { clinicians })),
+    saveSurgeries: (surgeries) => run(() => saveSurgeries(ctx(), deps, { surgeries })),
+    saveStaffProfile: (profile) => run(() => saveStaffProfile(ctx(), deps, { ...profile })),
   };
 }

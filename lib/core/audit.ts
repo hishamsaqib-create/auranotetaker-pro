@@ -66,6 +66,12 @@ export const AUDIT_DETAIL_RULES = {
   SESSION_STATUS_CHANGED: { from: status, to: status, reasonCode: isCode },
   INTEGRATION_CHECKED: { integration: oneOf('DENTALLY', 'STT', 'LLM', 'GOOGLE_DRIVE'), result: isCode, latencyMs: isCount },
   ACCESS_DENIED: { operation: isId, reasonCode: isCode },
+  // Configuration only (clinic, staff profiles, clinicians, surgeries): counts, never names or emails.
+  CONFIG_CHANGED: {
+    entity: oneOf('CLINIC', 'STAFF_PROFILE', 'CLINICIAN', 'SURGERY'),
+    change: oneOf('BOOTSTRAPPED', 'CREATED', 'UPDATED', 'SAVED'),
+    count: isCount,
+  },
 } as const satisfies Record<string, Record<string, Rule>>;
 
 export type AuditAction = keyof typeof AUDIT_DETAIL_RULES;

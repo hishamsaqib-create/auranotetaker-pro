@@ -46,7 +46,8 @@ describe('Base44 entities', () => {
 });
 
 describe('Base44 functions', () => {
-  const functionNames = readdirSync(functionsDir);
+  // bootstrapClinic runs before any clinic exists, so it has its own runner (tested in lib/server/bootstrap.test.ts).
+  const functionNames = readdirSync(functionsDir).filter((n) => n !== 'bootstrapClinic');
 
   it.each(functionNames)('%s has an entry point that runs the matching tested handler', (name) => {
     const entry = join(functionsDir, name, 'entry.ts');
@@ -56,5 +57,13 @@ describe('Base44 functions', () => {
     expect(source).toContain('export default function (req: Request)');
     expect(source).toContain(`runHandler(req, (r) => createClientFromRequest(r) as any, ${name}, (name) => secrets.get(name))`);
     expect(source).toContain("import { secrets } from 'base44:runtime';");
+  });
+});
+
+describe('First-run setup function', () => {
+  it('uses the bootstrap runner and reads secrets per request', () => {
+    const source = readFileSync(join(functionsDir, 'bootstrapClinic', 'entry.ts'), 'utf8');
+    expect(source).toContain('export default function (req: Request)');
+    expect(source).toContain('runBootstrap(req, (r) => createClientFromRequest(r) as any, (name) => secrets.get(name))');
   });
 });

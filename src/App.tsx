@@ -5,7 +5,10 @@ import { DEFAULT_TIME_ZONE, MINUTE_MS } from '../lib/core/time.ts';
 import type { PatientSummary } from '../lib/dentally/types.ts';
 import type { ScribeOutcome, SessionRestriction, SetupOptionsResponse } from '../lib/server/handlers.ts';
 import type { AppBackend, CurrentUser } from './backend/types.ts';
+import { BackendError } from './backend/types.ts';
+import { AdminScreen } from './components/AdminScreen.tsx';
 import { DemoBanner } from './components/DemoBanner.tsx';
+import { FirstRun } from './components/FirstRun.tsx';
 import { Header } from './components/Header.tsx';
 import { Notice } from './components/Notice.tsx';
 import { PatientConfirmation } from './components/PatientConfirmation.tsx';
@@ -25,12 +28,19 @@ export interface AppProps {
 export function App({ backend, clock = Date.now }: AppProps) {
   const [user, setUser] = useState<CurrentUser | null | undefined>(undefined);
   const [authError, setAuthError] = useState<string | null>(null);
+  const [needsSetup, setNeedsSetup] = useState(false);
 
   const loadUser = useCallback(async () => {
     try {
       setUser(await backend.getCurrentUser());
       setAuthError(null);
+      setNeedsSetup(false);
     } catch (err) {
+      if (err instanceof BackendError && err.code === 'NOT_SET_UP') {
+        setNeedsSetup(true);
+        setUser(null);
+        return;
+      }
       setAuthError(err instanceof Error ? err.message : 'Sign-in failed.');
       setUser(null);
     }
@@ -45,6 +55,18 @@ export function App({ backend, clock = Date.now }: AppProps) {
       <main className="gate">
         <p className="gate-lead">Starting AuraNoteTaker…</p>
       </main>
+    );
+  }
+  if (needsSetup) {
+    return (
+      <FirstRun
+        backend={backend}
+        onDone={() => void loadUser()}
+        onSignOut={async () => {
+          await backend.signOut();
+          setNeedsSetup(false);
+        }}
+      />
     );
   }
   if (!user) return <SignIn backend={backend} error={authError} onSignedIn={() => void loadUser()} />;
@@ -76,6 +98,9 @@ function Workspace({ backend, user, clock, onSignOut }: { backend: AppBackend; u
   const [sessionPatient, setSessionPatient] = useState<PatientSummary | null>(null);
   const [localOutcomes, setLocalOutcomes] = useState<Readonly<Record<string, ScribeOutcome>>>({});
   const [sessionCheckError, setSessionCheckError] = useState<string | null>(null);
+  const isAdmin = user.roles.includes('CLINIC_ADMIN');
+  const isClinical = user.roles.some((r) => r === 'DENTIST' || r === 'THERAPIST' || r === 'HYGIENIST' || r === 'NURSE');
+  const [showAdmin, setShowAdmin] = useState(isAdmin && !isClinical);
 
   useEffect(() => {
     backend
@@ -143,11 +168,33 @@ function Workspace({ backend, user, clock, onSignOut }: { backend: AppBackend; u
       now={now}
       timeZone={timeZone}
       dentally={dentallyStatus}
-      onChangeSetup={session && !restriction ? undefined : () => setEditingSetup(true)}
+      onChangeSetup={showAdmin || (session && !restriction) ? undefined : () => setEditingSetup(true)}
+      onOpenAdmin={isAdmin && !showAdmin && !session ? () => setShowAdmin(true) : undefined}
       onSignOut={onSignOut}
     />
   );
   const banner = backend.demo ? <DemoBanner demo={backend.demo} timeZone={timeZone} onScenarioChange={diary.refresh} /> : null;
+
+  if (showAdmin) {
+    return (
+      <div className="app">
+        {header}
+        {banner}
+        <AdminScreen
+          backend={backend}
+          onClose={
+            isClinical
+              ? () => {
+                  setShowAdmin(false);
+                  // Clinicians or surgeries may have changed: load the choices again.
+                  backend.getSetupOptions().then(setOptions).catch(() => undefined);
+                }
+              : undefined
+          }
+        />
+      </div>
+    );
+  }
 
   if (optionsError) {
     return (

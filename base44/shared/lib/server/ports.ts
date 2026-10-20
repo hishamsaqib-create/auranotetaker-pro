@@ -46,10 +46,45 @@ export interface SurgeryEntry {
   roomId: string | null;
 }
 
-/** Configured clinicians and surgeries for a clinic (from the Clinician and Surgery entities). */
+/** Configured clinicians and surgeries for a clinic (from the Clinician and Surgery entities). Active ones only. */
 export interface ClinicDirectory {
   listClinicians(clinicId: string): Promise<ClinicianEntry[]>;
   listSurgeries(clinicId: string): Promise<SurgeryEntry[]>;
+}
+
+export interface ClinicianRecord extends ClinicianEntry {
+  /** The Dentally user linked to the practitioner (Aura integrations have used it; issue P1-03). */
+  dentallyUserId: string | null;
+  active: boolean;
+}
+
+export interface SurgeryRecord extends SurgeryEntry {
+  active: boolean;
+}
+
+export interface StaffProfileRecord {
+  /** Lower case. Matches the Base44 sign-in email. */
+  email: string;
+  displayName: string;
+  roles: AppRole[];
+  /** Dentally practitioner ID when this person is a clinician. */
+  clinicianId: string | null;
+  active: boolean;
+}
+
+/** Configuration reads and writes for the setup screens. Only CLINIC_ADMIN handlers use it. */
+export interface ClinicAdminStore {
+  /** All clinicians, active or not. */
+  listClinicianRecords(clinicId: string): Promise<ClinicianRecord[]>;
+  /** Creates or updates each record, matched by Dentally practitioner ID. */
+  saveClinicianRecords(clinicId: string, records: readonly ClinicianRecord[]): Promise<void>;
+  /** All surgeries, active or not. */
+  listSurgeryRecords(clinicId: string): Promise<SurgeryRecord[]>;
+  /** Creates or updates each surgery, matched by Dentally room ID. `surgeryId` is ignored for new ones. */
+  saveSurgeryRecords(clinicId: string, records: readonly Omit<SurgeryRecord, 'surgeryId'>[]): Promise<void>;
+  listStaff(clinicId: string): Promise<StaffProfileRecord[]>;
+  /** Creates or updates the profile, matched by email. */
+  saveStaff(clinicId: string, record: StaffProfileRecord): Promise<void>;
 }
 
 export class VersionConflictError extends Error {
@@ -84,4 +119,5 @@ export interface HandlerDeps {
   sessions: SessionRepository;
   audit: AuditSink;
   directory: ClinicDirectory;
+  admin: ClinicAdminStore;
 }

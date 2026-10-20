@@ -261,6 +261,50 @@ describe('AuraNoteTaker main clinical screen (demo mode)', () => {
     expect(screen.getByText(/could not be added to the audit trail/)).toBeInTheDocument();
   });
 
+  it('opens clinic setup for a practice manager, who can switch a clinician off and add staff', async () => {
+    const backend = createDemoBackend({ clock, latencyMs: 0 });
+    const user = userEvent.setup();
+    render(<App backend={backend} clock={clock} />);
+    await user.click(await screen.findByRole('button', { name: /Jo Morgan/ }));
+
+    expect(await screen.findByRole('heading', { name: 'Set up Aura Dental Clinic (demo)' })).toBeInTheDocument();
+    const emma = screen.getByRole('checkbox', { name: /Emma Reid/ });
+    expect(emma).toBeChecked();
+    await user.click(emma);
+    await user.click(screen.getByRole('button', { name: 'Save clinicians' }));
+    expect(await screen.findByText('Clinicians saved.')).toBeInTheDocument();
+    expect(screen.getByRole('checkbox', { name: /Emma Reid/ })).not.toBeChecked();
+
+    await user.type(screen.getByLabelText('Email (their Base44 sign-in)'), 'new.nurse@demo.invalid');
+    await user.type(screen.getByLabelText('Name'), 'New Nurse');
+    await user.click(screen.getByRole('checkbox', { name: 'Nurse' }));
+    await user.click(screen.getByRole('button', { name: 'Save staff member' }));
+    expect(await screen.findByText('Staff member saved.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Edit New Nurse' })).toBeInTheDocument();
+    expect(backend.demo!.auditEvents().filter((e) => e.action === 'CONFIG_CHANGED')).toHaveLength(2);
+  });
+
+  it('offers first-run setup when the app has no clinic yet', async () => {
+    const demo = createDemoBackend({ clock, latencyMs: 0 });
+    let setUp = false;
+    const backend = {
+      ...demo,
+      getCurrentUser: async () => {
+        if (!setUp) throw new BackendError('NOT_SET_UP', 'AuraNoteTaker has not been set up yet.');
+        demo.demo!.signInAs('jo.morgan@demo.invalid');
+        return demo.getCurrentUser();
+      },
+      bootstrapClinic: async () => {
+        setUp = true;
+        return { clinicId: 'DEMO-CLINIC' };
+      },
+    };
+    const user = userEvent.setup();
+    render(<App backend={backend} clock={clock} />);
+    await user.click(await screen.findByRole('button', { name: 'Set up AuraNoteTaker' }));
+    expect(await screen.findByRole('heading', { name: 'Set up Aura Dental Clinic (demo)' })).toBeInTheDocument();
+  });
+
   it('blocks new sessions while Dentally is unavailable, and says why', async () => {
     const { user } = setup('dentally-offline');
     await signIn(user);
