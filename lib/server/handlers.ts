@@ -18,7 +18,7 @@ import { zonedDateString } from '../core/time.ts';
 import type { NurseNote, TranscriptSegment } from '../core/transcript.ts';
 import { contentDeleteAfterMs, orderSegments, validateNurseNoteText, validateSegments } from '../core/transcript.ts';
 import { DentallyError } from '../dentally/client.ts';
-import type { PatientSummary, PractitionerSummary, RoomSummary } from '../dentally/types.ts';
+import type { PatientSummary, PractitionerSummary, RoomListReport, RoomSummary } from '../dentally/types.ts';
 import { ContentCipherError } from './cipher.ts';
 import { AppError } from './errors.ts';
 import type { AppRole, ClinicianEntry, ClinicianRecord, HandlerDeps, StaffContext, StaffProfileRecord, SurgeryEntry, SurgeryRecord } from './ports.ts';
@@ -105,6 +105,8 @@ export interface ClinicSetupResponse {
   /** Practitioners and rooms as Dentally lists them; null when Dentally could not be reached. No patient data. */
   dentally: { practitioners: PractitionerSummary[]; rooms: RoomSummary[] } | null;
   dentallyError: string | null;
+  /** How Dentally's room list was read, for the setup screen when no rooms appear. Room data only, never patients. */
+  roomsReport: Omit<RoomListReport, 'rooms'> | null;
   clinicians: ClinicianRecord[];
   surgeries: SurgeryRecord[];
   staff: StaffProfileRecord[];
@@ -1076,9 +1078,12 @@ async function clinicSetup(deps: HandlerDeps): Promise<ClinicSetupResponse> {
   const clinicId = deps.clinic.clinicId;
   let dentally: ClinicSetupResponse['dentally'] = null;
   let dentallyError: string | null = null;
+  let roomsReport: ClinicSetupResponse['roomsReport'] = null;
   try {
-    const [practitioners, rooms] = await callDentally(() => Promise.all([deps.dentally.listPractitioners(), deps.dentally.listRooms()]));
+    const [practitioners, report] = await callDentally(() => Promise.all([deps.dentally.listPractitioners(), deps.dentally.listRoomsWithReport()]));
+    const { rooms, ...rest } = report;
     dentally = { practitioners, rooms };
+    roomsReport = rest;
   } catch (err) {
     // Staff can still be managed while Dentally is down; clinicians and surgeries cannot be added.
     if (!(err instanceof AppError)) throw err;
@@ -1089,7 +1094,7 @@ async function clinicSetup(deps: HandlerDeps): Promise<ClinicSetupResponse> {
     deps.admin.listSurgeryRecords(clinicId),
     deps.admin.listStaff(clinicId),
   ]);
-  return { clinicName: deps.clinic.name, dentally, dentallyError, clinicians, surgeries, staff };
+  return { clinicName: deps.clinic.name, dentally, dentallyError, roomsReport, clinicians, surgeries, staff };
 }
 
 /** Everything the setup screen shows: Dentally's practitioners and rooms, and what is configured. */

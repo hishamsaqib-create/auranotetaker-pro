@@ -3,13 +3,14 @@
 
 import type { DiaryAppointment } from '../core/appointments.ts';
 import type { DentallyClient } from './client.ts';
-import { parseAppointment, parsePatient, parsePractitioner, parseRoom } from './parse.ts';
+import { parseAppointment, parsePatient, parsePractitioner, parseRoom, toId } from './parse.ts';
 import type {
   DentallyCapabilities,
   DentallyReadService,
   DiaryResult,
   PatientSummary,
   PractitionerSummary,
+  RoomListReport,
   RoomSummary,
   UnsupportedResult,
 } from './types.ts';
@@ -81,7 +82,34 @@ export function createLiveDentallyService(client: DentallyClient): DentallyReadS
     },
 
     async listRooms(): Promise<RoomSummary[]> {
-      return (await client.listRooms()).map(parseRoom).flatMap((r) => (r.ok ? [r.value] : []));
+      return (await this.listRoomsWithReport()).rooms;
+    },
+
+    async listRoomsWithReport(): Promise<RoomListReport> {
+      let raw = await client.listRooms();
+      let bySite = false;
+      if (raw.length === 0) {
+        // Some accounts only list rooms per site: ask each site in turn.
+        bySite = true;
+        for (const site of await client.listSites()) {
+          const siteId = site && typeof site === 'object' ? toId((site as { id?: unknown }).id) : null;
+          if (siteId) raw = raw.concat(await client.listRooms(siteId));
+        }
+      }
+      const rooms: RoomSummary[] = [];
+      const rejected: Record<string, number> = {};
+      const seen = new Set<string>();
+      for (const item of raw) {
+        const r = parseRoom(item);
+        if (!r.ok) rejected[r.reason] = (rejected[r.reason] ?? 0) + 1;
+        else if (!seen.has(r.value.roomId)) {
+          seen.add(r.value.roomId);
+          rooms.push(r.value);
+        }
+      }
+      const first = raw[0];
+      const fieldNames = first && typeof first === 'object' ? Object.keys(first).filter((k) => /^[A-Za-z0-9_]{1,40}$/.test(k)).slice(0, 30) : [];
+      return { rooms, returned: raw.length, rejected, bySite, fieldNames };
     },
 
     async ping() {

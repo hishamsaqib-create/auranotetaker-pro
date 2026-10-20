@@ -26,6 +26,18 @@ export interface RoomSummary {
   siteId: string | null;
 }
 
+export interface RoomListReport {
+  rooms: RoomSummary[];
+  /** How many rooms Dentally returned, before checking. */
+  returned: number;
+  /** Why rooms were dropped, by reason code. */
+  rejected: Record<string, number>;
+  /** Whether rooms had to be fetched site by site because the plain list was empty. */
+  bySite: boolean;
+  /** Field names (never values) on the first room Dentally returned, to fix the mapping if it differs. */
+  fieldNames: string[];
+}
+
 export interface DiaryResult {
   appointments: DiaryAppointment[];
   /** Records Dentally returned that failed validation and were dropped rather than guessed at. */
@@ -62,6 +74,8 @@ export interface DentallyReadService {
   getPatient(patientId: string): Promise<PatientSummary | null>;
   listPractitioners(): Promise<PractitionerSummary[]>;
   listRooms(): Promise<RoomSummary[]>;
+  /** Rooms plus what was dropped and why, for the setup screen when no rooms can be read. No patient data. */
+  listRoomsWithReport(): Promise<RoomListReport>;
   ping(): Promise<{ latencyMs: number }>;
   getPatientClinicalHistory(patientId: string): Promise<UnsupportedResult>;
   getPatientNotes(patientId: string): Promise<UnsupportedResult>;

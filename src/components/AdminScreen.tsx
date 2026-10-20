@@ -174,6 +174,19 @@ export function AdminScreen({
           <section className="setup-group" aria-labelledby="surgeries-heading">
             <h2 id="surgeries-heading">Surgeries</h2>
             <p className="setup-lead">Tick the Dentally rooms that are surgeries with a computer running AuraNoteTaker.</p>
+            {setup.dentally.rooms.length === 0 && (
+              <Notice tone="warn" title="Dentally sent no rooms that AuraNoteTaker could read">
+                Dentally returned {setup.roomsReport?.returned ?? 0} room{setup.roomsReport?.returned === 1 ? '' : 's'}
+                {setup.roomsReport?.bySite ? ' (asked site by site)' : ''}.
+                {setup.roomsReport && Object.keys(setup.roomsReport.rejected).length > 0
+                  ? ` Not readable: ${Object.entries(setup.roomsReport.rejected)
+                      .map(([reason, n]) => `${n} ${reason.toLowerCase().replace(/_/g, ' ')}`)
+                      .join(', ')}.`
+                  : ''}
+                {setup.roomsReport && setup.roomsReport.fieldNames.length > 0 ? ` Fields: ${setup.roomsReport.fieldNames.join(', ')}.` : ''} Send this
+                message to whoever supports AuraNoteTaker.
+              </Notice>
+            )}
             <ul className="admin-list">
               {setup.dentally.rooms.map((r) => (
                 <li key={r.roomId} className="admin-row">

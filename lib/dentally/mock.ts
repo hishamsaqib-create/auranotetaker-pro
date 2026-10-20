@@ -8,7 +8,7 @@ import type { AppointmentState, DiaryAppointment } from '../core/appointments.ts
 import { MINUTE_MS } from '../core/time.ts';
 import { DentallyError } from './client.ts';
 import { DENTALLY_CAPABILITIES, UNSUPPORTED_DETAIL, unsupported } from './service.ts';
-import type { DentallyReadService, DiaryResult, PatientSummary, PractitionerSummary, RoomSummary } from './types.ts';
+import type { DentallyReadService, DiaryResult, PatientSummary, PractitionerSummary, RoomListReport, RoomSummary } from './types.ts';
 
 export type DemoScenario = 'normal' | 'double-booked' | 'overrun' | 'previous-open' | 'between' | 'taken-early' | 'dentally-offline';
 
@@ -204,6 +204,11 @@ export class MockDentallyService implements DentallyReadService {
   async listRooms(): Promise<RoomSummary[]> {
     this.#checkOnline();
     return DEMO_ROOMS.map((r) => ({ ...r }));
+  }
+
+  async listRoomsWithReport(): Promise<RoomListReport> {
+    const rooms = await this.listRooms();
+    return { rooms, returned: rooms.length, rejected: {}, bySite: false, fieldNames: ['id', 'name', 'site_id'] };
   }
 
   async ping() {

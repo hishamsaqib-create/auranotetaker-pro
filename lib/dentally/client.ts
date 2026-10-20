@@ -103,8 +103,8 @@ export class DentallyClient {
     return this.#listAll('/v1/practitioners', 'practitioners', {});
   }
 
-  async listRooms(): Promise<unknown[]> {
-    return this.#listAll('/v1/rooms', 'rooms', {});
+  async listRooms(siteId?: string): Promise<unknown[]> {
+    return this.#listAll('/v1/rooms', 'rooms', { site_id: siteId ? this.#id(siteId) : undefined });
   }
 
   async listSites(): Promise<unknown[]> {

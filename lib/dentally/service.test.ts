@@ -146,3 +146,36 @@ describe('mock Dentally service scenarios', () => {
     }
   });
 });
+
+describe('listRoomsWithReport', () => {
+  const fakeClient = (rooms: Record<string, unknown[]>, sites: unknown[] = []) =>
+    ({
+      listRooms: async (siteId?: string) => rooms[siteId ?? 'all'] ?? [],
+      listSites: async () => sites,
+    }) as unknown as DentallyClient;
+
+  it('reads rooms and reports nothing dropped', async () => {
+    const s = createLiveDentallyService(fakeClient({ all: [{ id: 1, name: 'Surgery 1', site_id: 'abc' }] }));
+    const r = await s.listRoomsWithReport();
+    expect(r).toMatchObject({ returned: 1, rejected: {}, bySite: false, fieldNames: ['id', 'name', 'site_id'] });
+    expect(r.rooms).toEqual([{ roomId: '1', name: 'Surgery 1', siteId: 'abc' }]);
+  });
+
+  it('asks site by site when the plain list is empty, without duplicates', async () => {
+    const s = createLiveDentallyService(
+      fakeClient({ all: [], s1: [{ id: 1, name: 'Surgery 1' }], s2: [{ id: 1, name: 'Surgery 1' }, { id: 2, name: 'Surgery 2' }] }, [{ id: 's1' }, { id: 's2' }]),
+    );
+    const r = await s.listRoomsWithReport();
+    expect(r.bySite).toBe(true);
+    expect(r.rooms.map((x) => x.roomId)).toEqual(['1', '2']);
+  });
+
+  it('says why rooms were dropped, naming fields but never values', async () => {
+    const s = createLiveDentallyService(fakeClient({ all: [{ id: 5, title: 'Surgery 5' }] }));
+    const r = await s.listRoomsWithReport();
+    expect(r.rooms).toEqual([]);
+    expect(r.rejected).toEqual({ MISSING_NAME: 1 });
+    expect(r.fieldNames).toEqual(['id', 'title']);
+    expect(JSON.stringify(r)).not.toContain('Surgery 5');
+  });
+});
