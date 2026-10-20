@@ -1,0 +1,18 @@
+// Integration configuration. Holds the NAME of a backend secret, never its value.
+{
+  "name": "Integration",
+  "type": "object",
+  "properties": {
+    "clinic_id": { "type": "string" },
+    "kind": { "type": "string", "enum": ["DENTALLY", "STT", "LLM", "GOOGLE_DRIVE"] },
+    "environment": { "type": "string", "enum": ["SANDBOX", "PRODUCTION"] },
+    "status": { "type": "string", "enum": ["NOT_CONFIGURED", "ACTIVE", "DEGRADED", "DISABLED"], "default": "NOT_CONFIGURED" },
+    "secret_name": { "type": "string", "pattern": "^[A-Z0-9_]{3,64}$" },
+    "config": { "type": "object", "description": "Non-secret settings only: base URL, site ID, region, model ID" },
+    "capabilities": { "type": "object" },
+    "last_checked_at": { "type": "string", "format": "date-time" },
+    "last_error_code": { "type": "string", "maxLength": 40 }
+  },
+  "required": ["clinic_id", "kind", "environment", "status"],
+  "rls": { "create": false, "read": false, "update": false, "delete": false }
+}

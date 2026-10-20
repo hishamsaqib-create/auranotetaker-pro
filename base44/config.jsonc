@@ -1,0 +1,12 @@
+{
+  "name": "auranotetaker-pro",
+  "description": "Ambient AI dental scribe and clinical-record audit for Aura Dental Clinic",
+  // Invite-only. Confirm the accepted value with `npx base44 --help` when the app is linked (issue P1-01).
+  "visibility": "private",
+  "entitiesDir": "./entities",
+  "functionsDir": "./functions",
+  // Frontend build output, resolved from the project root.
+  "site": {
+    "outputDirectory": "./dist"
+  }
+}

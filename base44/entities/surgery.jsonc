@@ -1,0 +1,13 @@
+// A surgery (room). Read and written only by backend functions.
+{
+  "name": "Surgery",
+  "type": "object",
+  "properties": {
+    "clinic_id": { "type": "string" },
+    "name": { "type": "string" },
+    "dentally_room_id": { "type": "string" },
+    "active": { "type": "boolean", "default": true }
+  },
+  "required": ["clinic_id", "name", "active"],
+  "rls": { "create": false, "read": false, "update": false, "delete": false }
+}

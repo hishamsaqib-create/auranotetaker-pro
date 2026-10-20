@@ -1,0 +1,10 @@
+{
+  // Type-checks the Base44 adapter and the generated shared copy (Deno runtime, so no Node types).
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": [],
+    "lib": ["ES2022", "DOM"]
+  },
+  "include": ["base44/shared/**/*.ts"],
+  "exclude": []
+}

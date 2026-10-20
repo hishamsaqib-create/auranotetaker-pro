@@ -1,0 +1,24 @@
+// A tenant. Read and written only by backend functions.
+{
+  "name": "Clinic",
+  "type": "object",
+  "properties": {
+    "name": { "type": "string" },
+    "slug": { "type": "string", "pattern": "^[a-z0-9-]{2,32}$", "description": "Short key used in secret names, e.g. aura" },
+    "time_zone": { "type": "string", "default": "Europe/London" },
+    "tooth_notation": { "type": "string", "enum": ["PALMER", "FDI"], "default": "PALMER" },
+    "dentally_site_id": { "type": "string" },
+    "status": { "type": "string", "enum": ["ACTIVE", "SUSPENDED"], "default": "ACTIVE" },
+    "settings": {
+      "type": "object",
+      "properties": {
+        "early_start_minutes": { "type": "integer", "minimum": 0, "maximum": 60, "default": 10 },
+        "overrun_minutes": { "type": "integer", "minimum": 0, "maximum": 120, "default": 30 },
+        "inactivity_lock_minutes": { "type": "integer", "minimum": 1, "maximum": 60, "default": 10 },
+        "writeback_mode": { "type": "string", "enum": ["NONE", "EXPORT", "API"], "default": "NONE" }
+      }
+    }
+  },
+  "required": ["name", "slug", "time_zone", "status"],
+  "rls": { "create": false, "read": false, "update": false, "delete": false }
+}

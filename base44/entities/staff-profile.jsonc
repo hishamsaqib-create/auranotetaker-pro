@@ -1,0 +1,23 @@
+// The only source of truth for roles and clinic membership. Users may read their own row; only functions write.
+{
+  "name": "StaffProfile",
+  "type": "object",
+  "properties": {
+    "user_email": { "type": "string", "format": "email" },
+    "clinic_id": { "type": "string" },
+    "app_roles": {
+      "type": "array",
+      "items": { "type": "string", "enum": ["SUPER_ADMIN", "CLINIC_ADMIN", "DENTIST", "THERAPIST", "HYGIENIST", "NURSE", "AUDITOR"] }
+    },
+    "clinician_id": { "type": "string", "description": "Dentally practitioner ID when this person is a clinician" },
+    "display_name": { "type": "string" },
+    "active": { "type": "boolean", "default": true }
+  },
+  "required": ["user_email", "clinic_id", "app_roles", "display_name", "active"],
+  "rls": {
+    "create": false,
+    "read": { "data.user_email": "{{user.email}}" },
+    "update": false,
+    "delete": false
+  }
+}

@@ -1,0 +1,80 @@
+// A scribe session. The patient is locked at creation; only an audited reassignment changes it.
+// Read and written only by backend functions (lib/server/handlers.ts).
+{
+  "name": "ScribeSession",
+  "type": "object",
+  "properties": {
+    "session_id": { "type": "string", "format": "uuid" },
+    "clinic_id": { "type": "string" },
+    "clinician_id": { "type": "string" },
+    "surgery_id": { "type": "string" },
+    "status": {
+      "type": "string",
+      "enum": ["PATIENT_CONFIRMED", "CONSENT_DECLINED", "READY", "RECORDING", "PAUSED", "STOPPED", "GENERATING", "IN_REVIEW", "APPROVED", "DISCARDED", "CANCELLED"]
+    },
+    "dentally_patient_id": { "type": "string" },
+    "appointment": {
+      "type": "object",
+      "properties": {
+        "dentally_appointment_id": { "type": "string" },
+        "practitioner_id": { "type": "string" },
+        "room_id": { "type": "string" },
+        "start_time": { "type": "string", "format": "date-time" },
+        "finish_time": { "type": "string", "format": "date-time" },
+        "reason": { "type": "string", "maxLength": 60 },
+        "state_at_confirmation": { "type": "string" }
+      }
+    },
+    "confirmation": {
+      "type": "object",
+      "properties": {
+        "method": { "type": "string", "enum": ["CONFIRMED_SUGGESTION", "CHOSE_ALTERNATIVE", "RESOLVED_AMBIGUITY", "CHOSE_FROM_DIARY"] },
+        "predicted_appointment_id": { "type": "string" },
+        "matched_prediction": { "type": "boolean" },
+        "confirmed_by_email": { "type": "string", "format": "email" },
+        "confirmed_at": { "type": "string", "format": "date-time" }
+      }
+    },
+    "consent": {
+      "type": "object",
+      "properties": {
+        "status": { "type": "string", "enum": ["PENDING", "GIVEN", "DECLINED"] },
+        "recorded_by_email": { "type": "string" },
+        "recorded_at": { "type": "string", "format": "date-time" }
+      }
+    },
+    "reassignments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "from_patient_id": { "type": "string" },
+          "to_patient_id": { "type": "string" },
+          "from_appointment_id": { "type": "string" },
+          "to_appointment_id": { "type": "string" },
+          "by_email": { "type": "string" },
+          "at": { "type": "string", "format": "date-time" },
+          "reason": { "type": "string", "maxLength": 300 },
+          "consent_carried_over": { "type": "boolean" }
+        }
+      }
+    },
+    "status_history": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "status": { "type": "string" },
+          "at": { "type": "string", "format": "date-time" },
+          "by_email": { "type": "string" }
+        }
+      }
+    },
+    "recording_started_at": { "type": "string", "format": "date-time" },
+    "recording_stopped_at": { "type": "string", "format": "date-time" },
+    "client_device_id": { "type": "string", "maxLength": 64 },
+    "version": { "type": "integer", "minimum": 1 }
+  },
+  "required": ["session_id", "clinic_id", "clinician_id", "status", "dentally_patient_id", "appointment", "confirmation", "consent", "version"],
+  "rls": { "create": false, "read": false, "update": false, "delete": false }
+}

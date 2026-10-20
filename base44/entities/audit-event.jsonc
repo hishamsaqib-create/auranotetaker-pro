@@ -1,0 +1,31 @@
+// Append-only audit trail. Details hold allowlisted metadata only (lib/core/audit.ts), never clinical text.
+// Created only by backend functions; never updated or deleted except by the retention job (Phase 7).
+{
+  "name": "AuditEvent",
+  "type": "object",
+  "properties": {
+    "clinic_id": { "type": "string" },
+    "occurred_at": { "type": "string", "format": "date-time" },
+    "actor_email": { "type": "string" },
+    "actor_roles": { "type": "array", "items": { "type": "string" } },
+    "action": {
+      "type": "string",
+      "enum": ["DIARY_VIEWED", "PATIENT_VIEWED", "PATIENT_CONFIRMED", "CONSENT_RECORDED", "PATIENT_REASSIGNED", "SESSION_CANCELLED", "SESSION_STATUS_CHANGED", "INTEGRATION_CHECKED", "ACCESS_DENIED"]
+    },
+    "session_id": { "type": "string" },
+    "dentally_patient_id": { "type": "string" },
+    "dentally_appointment_id": { "type": "string" },
+    "details": { "type": "object" },
+    "client": {
+      "type": "object",
+      "properties": {
+        "device_id": { "type": "string" },
+        "app_version": { "type": "string" }
+      }
+    },
+    "prev_hash": { "type": "string" },
+    "hash": { "type": "string" }
+  },
+  "required": ["clinic_id", "occurred_at", "actor_email", "action"],
+  "rls": { "create": false, "read": false, "update": false, "delete": false }
+}

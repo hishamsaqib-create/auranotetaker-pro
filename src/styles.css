@@ -1,0 +1,974 @@
+/*
+  AuraNoteTaker Pro: surgery screen styles.
+
+  Read at a glance, from the chair, often with loupes on. So: one highly legible family
+  (Atkinson Hyperlegible Next, which separates 1/l/I and 0/O for IDs and dates), large type,
+  large targets, status always shown as words as well as colour. Aura's charcoal carries the
+  primary actions and the locked-patient banner; Aura gold is kept for the brand mark, focus
+  and the "locked" label. Red is reserved for recording (Phase 2).
+*/
+
+:root {
+  --ink: #1a1a1a;
+  --ink-2: #44504f;
+  --ink-3: #65716f;
+  --paper: #f1f4f3;
+  --surface: #ffffff;
+  --line: #d5dcda;
+  --line-strong: #b8c2bf;
+  --gold: #c8aa6e;
+  --gold-ink: #7a5f28;
+
+  --ok: #1e6b4e;
+  --ok-bg: #e2f1e9;
+  --warn: #874f00;
+  --warn-bg: #fff1d6;
+  --bad: #a8231b;
+  --bad-bg: #fce5e2;
+  --demo: #37406e;
+  --demo-bg: #e7eaf6;
+  --record: #c9271d;
+
+  --radius-s: 6px;
+  --radius-m: 10px;
+  --font: 'Atkinson Hyperlegible Next Variable', 'Atkinson Hyperlegible Next', system-ui, 'Segoe UI', Roboto, Arial, sans-serif;
+
+  color-scheme: light;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font);
+  font-size: 18px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1,
+h2,
+h3,
+p {
+  margin: 0;
+}
+
+button,
+select,
+input {
+  font: inherit;
+  color: inherit;
+}
+
+:focus-visible {
+  outline: 3px solid var(--gold);
+  outline-offset: 2px;
+}
+
+.visually-hidden {
+  position: absolute !important;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.mono-digits {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ------------------------------------------------------------------ layout */
+
+.app {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.main {
+  flex: 1;
+  padding: 28px 32px 48px;
+}
+
+.workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1.65fr) minmax(320px, 1fr);
+  gap: 32px;
+  align-items: start;
+  max-width: 1440px;
+  margin: 0 auto;
+}
+
+/* ------------------------------------------------------------------ top bar */
+
+.topbar {
+  display: grid;
+  grid-template-columns: auto 1fr auto auto auto;
+  align-items: center;
+  gap: 24px;
+  padding: 10px 32px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+}
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 700;
+  font-size: 18px;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+
+.brand-large {
+  font-size: 24px;
+  margin-bottom: 28px;
+}
+
+.topbar-context {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  min-width: 0;
+}
+
+.context-primary {
+  font-weight: 700;
+  font-size: 19px;
+}
+
+.context-secondary {
+  color: var(--ink-2);
+}
+
+.clock {
+  font-size: 30px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+.topbar-status {
+  display: flex;
+  gap: 8px;
+}
+
+.topbar-user {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  white-space: nowrap;
+}
+
+.user-name {
+  color: var(--ink-2);
+}
+
+/* ------------------------------------------------------------------ pills, tags, notices */
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 12px;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+  font-size: 15px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.pill svg {
+  margin-right: -2px;
+}
+
+.pill-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.pill-ok {
+  color: var(--ok);
+  background: var(--ok-bg);
+}
+
+.pill-warn {
+  color: var(--warn);
+  background: var(--warn-bg);
+}
+
+.pill-bad {
+  color: var(--bad);
+  background: var(--bad-bg);
+}
+
+.pill-demo {
+  color: var(--demo);
+  background: var(--demo-bg);
+}
+
+.pill-neutral {
+  color: var(--ink-2);
+  background: var(--surface);
+}
+
+.pill-neutral .pill-dot {
+  background: transparent;
+  border: 2px solid currentColor;
+}
+
+.tag {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--line-strong);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+
+.tag-now {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: #fff;
+}
+
+.state-in-surgery {
+  border-color: var(--ink);
+  color: var(--ink);
+}
+
+.state-cancelled,
+.state-did-not-attend {
+  text-decoration: line-through;
+}
+
+.state-unknown {
+  border-color: var(--warn);
+  color: var(--warn);
+}
+
+.notice {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  padding: 14px 18px;
+  border-radius: var(--radius-s);
+  border-left: 5px solid currentColor;
+  margin-bottom: 16px;
+}
+
+.notice-title {
+  font-weight: 700;
+}
+
+.notice-warn {
+  color: var(--warn);
+  background: var(--warn-bg);
+}
+
+.notice-bad {
+  color: var(--bad);
+  background: var(--bad-bg);
+}
+
+.notice-info {
+  color: var(--demo);
+  background: var(--demo-bg);
+}
+
+.notice > .notice-body {
+  color: var(--ink);
+}
+
+.notice .notice-title {
+  color: inherit;
+}
+
+/* ------------------------------------------------------------------ demo banner */
+
+.demo-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 24px;
+  padding: 10px 32px 10px 0;
+  background: #fbf6ea;
+  border-bottom: 1px solid #eadfc4;
+  font-size: 16px;
+}
+
+/* Brand-coloured hazard tape: unmistakable, and nothing else in the app looks like it. */
+.demo-tape {
+  align-self: stretch;
+  width: 64px;
+  min-height: 28px;
+  margin: -10px 0;
+  background: repeating-linear-gradient(-45deg, var(--ink) 0 10px, var(--gold) 10px 20px);
+}
+
+.demo-text {
+  flex: 1 1 360px;
+}
+
+.demo-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.demo-control select {
+  padding: 6px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-s);
+  background: var(--surface);
+}
+
+.demo-audit {
+  flex-basis: 100%;
+  max-height: 260px;
+  overflow: auto;
+  margin-left: 64px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-s);
+}
+
+.demo-audit table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.demo-audit th,
+.demo-audit td {
+  text-align: left;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+}
+
+.demo-audit p {
+  padding: 10px;
+}
+
+/* ------------------------------------------------------------------ buttons */
+
+.button {
+  position: relative;
+  overflow: hidden;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 60px;
+  padding: 0 28px;
+  border-radius: var(--radius-s);
+  border: 2px solid transparent;
+  font-size: 20px;
+  font-weight: 650;
+  cursor: pointer;
+  text-align: center;
+}
+
+.button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.button-primary {
+  background: var(--ink);
+  color: #fff;
+}
+
+.button-primary:not(:disabled):hover {
+  background: #000;
+}
+
+.button-secondary {
+  background: var(--surface);
+  border-color: var(--ink);
+  color: var(--ink);
+}
+
+.button-secondary:not(:disabled):hover {
+  background: #f4f6f5;
+}
+
+.button-quiet {
+  background: transparent;
+  color: var(--ink-2);
+}
+
+.button-record {
+  background: var(--record);
+  color: #fff;
+  min-width: 240px;
+}
+
+/* While the change guard holds, the confirm button fills with a gold bar so the pause reads as intentional. */
+.confirm.confirm-holding {
+  opacity: 0.6;
+}
+
+.confirm.confirm-holding::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 100%;
+  height: 4px;
+  background: var(--gold);
+  transform-origin: left;
+  animation: hold 1.5s linear forwards;
+}
+
+@keyframes hold {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .confirm.confirm-holding::after {
+    animation: none;
+    transform: none;
+  }
+}
+
+.link-button {
+  background: none;
+  border: none;
+  padding: 4px 2px;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--ink);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.link-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-top: 28px;
+}
+
+/* ------------------------------------------------------------------ confirmation */
+
+.state-block {
+  display: flex;
+  flex-direction: column;
+}
+
+.state-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px 20px;
+  margin-bottom: 18px;
+}
+
+.state-title {
+  font-size: 28px;
+  line-height: 1.2;
+  font-weight: 700;
+}
+
+.state-lead {
+  max-width: 62ch;
+  color: var(--ink-2);
+  margin-bottom: 18px;
+}
+
+.confidence {
+  font-size: 16px;
+  font-weight: 700;
+  padding-left: 10px;
+  border-left: 4px solid currentColor;
+}
+
+.confidence-high {
+  color: var(--ok);
+}
+
+.confidence-medium {
+  color: var(--warn);
+}
+
+.patient {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-left: 6px solid var(--ink);
+  border-radius: var(--radius-m);
+  padding: 28px 32px 30px;
+}
+
+.patient-name {
+  font-size: 46px;
+  line-height: 1.08;
+  font-weight: 750;
+  letter-spacing: -0.015em;
+  margin-bottom: 22px;
+}
+
+.patient-compact .patient-name {
+  font-size: 32px;
+}
+
+.patient-facts {
+  display: grid;
+  grid-template-columns: 170px 1fr;
+  row-gap: 8px;
+  margin: 0;
+}
+
+.patient-facts > div,
+.locked-facts > div {
+  display: contents;
+}
+
+.patient-facts dt {
+  color: var(--ink-3);
+  font-size: 16px;
+  padding-top: 3px;
+}
+
+.patient-facts dd {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 550;
+}
+
+.patient-compact .patient-facts {
+  grid-template-columns: 130px 1fr;
+}
+
+.patient-compact .patient-facts dd {
+  font-size: 18px;
+}
+
+.reasons {
+  margin-top: 22px;
+  padding-top: 18px;
+  border-top: 1px solid var(--line);
+}
+
+.reasons h3 {
+  font-size: 16px;
+  color: var(--ink-2);
+  margin-bottom: 8px;
+}
+
+.reasons ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.reasons li {
+  position: relative;
+  padding-left: 18px;
+  color: var(--ink-2);
+}
+
+.reasons li::before {
+  content: '';
+  position: absolute;
+  left: 2px;
+  top: 0.62em;
+  width: 7px;
+  height: 7px;
+  background: var(--gold);
+}
+
+.candidate-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 20px;
+}
+
+/* ------------------------------------------------------------------ diary */
+
+.diary {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-m);
+  overflow: hidden;
+}
+
+.diary-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--line);
+}
+
+.diary-head h2 {
+  font-size: 20px;
+}
+
+.diary-refresh {
+  font-size: 14px;
+  color: var(--ink-2);
+}
+
+.diary .notice {
+  margin: 12px 16px;
+}
+
+.diary-empty {
+  padding: 20px;
+  color: var(--ink-3);
+}
+
+.diary-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: calc(100vh - 230px);
+  overflow: auto;
+}
+
+.diary-row {
+  border-bottom: 1px solid var(--line);
+}
+
+.diary-row:last-child {
+  border-bottom: none;
+}
+
+.diary-button,
+.diary-static {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 112px minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 12px 20px;
+  background: none;
+  border: none;
+  text-align: left;
+  font-size: 17px;
+}
+
+.diary-button {
+  cursor: pointer;
+}
+
+.diary-button:hover {
+  background: #f6f8f7;
+}
+
+.diary-row.is-selected .diary-button {
+  background: #edf1f0;
+  box-shadow: inset 5px 0 0 var(--ink);
+}
+
+.diary-row.is-muted {
+  color: var(--ink-3);
+}
+
+.diary-time {
+  color: var(--ink-2);
+}
+
+.diary-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.diary-name {
+  font-weight: 650;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diary-reason {
+  font-size: 15px;
+  color: var(--ink-3);
+}
+
+.diary-tags {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+
+/* ------------------------------------------------------------------ session */
+
+.session {
+  max-width: 1100px;
+  margin: 0 auto;
+}
+
+.locked {
+  background: var(--ink);
+  color: #fff;
+  border-radius: var(--radius-m);
+  padding: 22px 32px 26px;
+}
+
+.locked-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--gold);
+  font-weight: 700;
+  font-size: 16px;
+}
+
+.locked-name {
+  font-size: 42px;
+  line-height: 1.1;
+  font-weight: 750;
+  letter-spacing: -0.015em;
+  margin: 8px 0 16px;
+}
+
+.locked-facts {
+  display: grid;
+  grid-template-columns: repeat(4, auto);
+  grid-auto-flow: column;
+  grid-template-rows: auto auto;
+  justify-content: start;
+  column-gap: 40px;
+  margin: 0;
+}
+
+.locked-facts dt {
+  color: #b7c1bf;
+  font-size: 14px;
+}
+
+.locked-facts dd {
+  margin: 0;
+  font-size: 19px;
+  font-weight: 550;
+}
+
+.step {
+  margin-top: 32px;
+  max-width: 820px;
+}
+
+.step .state-title {
+  margin-bottom: 12px;
+}
+
+.step-escape {
+  margin-top: 20px;
+  color: var(--ink-2);
+}
+
+/* ------------------------------------------------------------------ setup and sign-in */
+
+.setup {
+  max-width: 1000px;
+  margin: 40px auto;
+  padding: 0 32px;
+  width: 100%;
+}
+
+.setup h1 {
+  font-size: 30px;
+  margin-bottom: 8px;
+}
+
+.setup-lead {
+  color: var(--ink-2);
+  margin-bottom: 28px;
+}
+
+.setup-group {
+  border: none;
+  padding: 0;
+  margin: 0 0 28px;
+}
+
+.setup-group legend {
+  font-weight: 700;
+  font-size: 20px;
+  margin-bottom: 12px;
+}
+
+.tile-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 12px;
+}
+
+.tile {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 18px 20px;
+  background: var(--surface);
+  border: 2px solid var(--line);
+  border-radius: var(--radius-m);
+  cursor: pointer;
+}
+
+.tile input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.tile:has(input:focus-visible) {
+  outline: 3px solid var(--gold);
+  outline-offset: 2px;
+}
+
+.tile-selected {
+  border-color: var(--ink);
+  box-shadow: inset 0 0 0 1px var(--ink);
+}
+
+.tile-title {
+  font-size: 20px;
+  font-weight: 700;
+}
+
+.tile-sub {
+  color: var(--ink-3);
+  font-size: 16px;
+}
+
+.gate {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 32px;
+}
+
+.gate-panel {
+  width: min(520px, 100%);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-m);
+  padding: 36px 36px 40px;
+}
+
+.gate-panel h1 {
+  font-size: 28px;
+  margin-bottom: 8px;
+}
+
+.gate-lead {
+  color: var(--ink-2);
+  margin-bottom: 24px;
+}
+
+.choice-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 10px;
+}
+
+.choice {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  padding: 16px 20px;
+  background: var(--surface);
+  border: 2px solid var(--line);
+  border-radius: var(--radius-m);
+  cursor: pointer;
+  text-align: left;
+}
+
+.choice:hover {
+  border-color: var(--ink);
+}
+
+.choice-title {
+  font-size: 20px;
+  font-weight: 700;
+}
+
+.choice-sub {
+  color: var(--ink-3);
+}
+
+/* ------------------------------------------------------------------ narrower screens */
+
+@media (max-width: 1100px) {
+  .topbar {
+    grid-template-columns: auto 1fr auto;
+  }
+
+  .topbar-status,
+  .topbar-user {
+    grid-column: span 3;
+    justify-content: flex-start;
+  }
+}
+
+@media (max-width: 980px) {
+  .workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .main {
+    padding: 20px 16px 40px;
+  }
+
+  .topbar,
+  .setup {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+
+  .patient {
+    padding: 22px 20px;
+  }
+
+  .patient-name {
+    font-size: 34px;
+  }
+
+  .patient-facts {
+    grid-template-columns: 1fr;
+  }
+
+  .locked-facts {
+    grid-auto-flow: row;
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: none;
+  }
+}

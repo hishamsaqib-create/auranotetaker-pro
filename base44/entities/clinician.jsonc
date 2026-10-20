@@ -1,0 +1,15 @@
+// Maps a Dentally practitioner. Read and written only by backend functions.
+{
+  "name": "Clinician",
+  "type": "object",
+  "properties": {
+    "clinic_id": { "type": "string" },
+    "dentally_practitioner_id": { "type": "string" },
+    "dentally_user_id": { "type": "string", "description": "Kept because Aura integrations have used user.id; see issue P1-03" },
+    "display_name": { "type": "string" },
+    "clinician_type": { "type": "string", "enum": ["DENTIST", "THERAPIST", "HYGIENIST", "OTHER"] },
+    "active": { "type": "boolean", "default": true }
+  },
+  "required": ["clinic_id", "dentally_practitioner_id", "display_name", "clinician_type", "active"],
+  "rls": { "create": false, "read": false, "update": false, "delete": false }
+}

@@ -1,0 +1,6 @@
+# Safety-critical paths need review from the clinical owner (enforced when branch protection requires code owner review).
+/lib/core/      @hishamsaqib-create
+/lib/server/    @hishamsaqib-create
+/base44/        @hishamsaqib-create
+/docs/clinical-safety.md        @hishamsaqib-create
+/docs/security-and-privacy.md   @hishamsaqib-create
