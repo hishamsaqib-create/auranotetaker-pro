@@ -9,6 +9,8 @@
 // SAFETY (clinical record): a blank left empty stays visible in the note as "[Tooth]", never silently dropped,
 // so an unfinished note cannot pass for a finished one. Templates hold no patient data.
 
+import { STARTER_TEMPLATE_DATA } from './starterTemplates.ts';
+
 export interface TemplateField {
   /** As written, without the options, e.g. "Consent". Unique within a template (case-insensitive). */
   label: string;
@@ -109,101 +111,15 @@ export function checkTemplate(title: unknown, body: unknown): TemplateCheck {
 }
 
 /**
- * Starter templates. Generic wording for the clinic to check, change and make its own: every clinician
- * must review a note before it goes into Dentally. Tooth notation follows Aura's style (UR1, LL6; decision D5).
+ * Starter templates (lib/core/starterTemplates.ts): read-only starting points for the clinic to check and make its
+ * own. Every clinician checks every note before it goes into Dentally.
  */
-export const STARTER_TEMPLATES: readonly NoteTemplate[] = [
-  {
-    templateId: 'starter-examination',
-    title: 'Examination (starter)',
-    body: [
-      'Examination',
-      'C/O: [Complaint]',
-      'MH: [Medical history: reviewed, no changes / reviewed, changes noted]',
-      'E/O: [Extra-oral: NAD / see notes]',
-      'I/O: soft tissues [Soft tissues: NAD / see notes]',
-      'BPE: [BPE]',
-      'Charting updated: [Charting updated: yes / no]',
-      'Radiographs: [Radiographs: none taken / bitewings taken, reported / OPG taken, reported]',
-      'Diagnosis: [Diagnosis]',
-      'Options discussed, including risks, benefits and costs: [Options]',
-      'Patient choice: [Plan]',
-      'OHI given: [OHI: yes / no]',
-      'Recall: [Recall: 6 months / 9 months / 12 months]',
-    ].join('\n'),
-    active: true,
-    starter: true,
-    updatedBy: null,
-    updatedAtMs: null,
-  },
-  {
-    templateId: 'starter-composite',
-    title: 'Composite restoration (starter)',
-    body: [
-      'Composite restoration [Tooth] [Surfaces]',
-      'MH: [Medical history: reviewed, no changes / reviewed, changes noted]',
-      'Consent: [Consent: verbal / written] consent obtained after discussing risks, benefits and alternatives.',
-      'LA: [Anaesthetic: articaine 4% 1:100,000 / lidocaine 2% 1:80,000 / none] [Amount] [Technique: infiltration / IDB]',
-      'Isolation: [Isolation: rubber dam / cotton wool rolls]',
-      'Caries removed, [Lining: no lining / lining placed]',
-      'Composite: [Shade], bonded and placed incrementally, occlusion checked.',
-      'Post-op advice given.',
-    ].join('\n'),
-    active: true,
-    starter: true,
-    updatedBy: null,
-    updatedAtMs: null,
-  },
-  {
-    templateId: 'starter-extraction',
-    title: 'Extraction (starter)',
-    body: [
-      'Extraction [Tooth]',
-      'MH: [Medical history: reviewed, no changes / reviewed, changes noted]',
-      'Consent: [Consent: verbal / written] consent obtained, including risks of pain, swelling, bleeding, infection and dry socket.',
-      'LA: [Anaesthetic: articaine 4% 1:100,000 / lidocaine 2% 1:80,000] [Amount] [Technique: infiltration / IDB]',
-      'Extraction: [Method: simple forceps / elevators and forceps / surgical]',
-      'Haemostasis achieved: [Haemostasis: yes / with sutures]',
-      'Post-op instructions given verbally and in writing.',
-    ].join('\n'),
-    active: true,
-    starter: true,
-    updatedBy: null,
-    updatedAtMs: null,
-  },
-  {
-    templateId: 'starter-hygiene',
-    title: 'Hygiene visit (starter)',
-    body: [
-      'Hygiene visit',
-      'MH: [Medical history: reviewed, no changes / reviewed, changes noted]',
-      'BPE: [BPE]',
-      'Plaque and bleeding: [Plaque and bleeding]',
-      'Treatment: [Treatment: supragingival scale and polish / subgingival debridement]',
-      'OHI: [OHI given]',
-      'Recall: [Recall: 3 months / 4 months / 6 months]',
-    ].join('\n'),
-    active: true,
-    starter: true,
-    updatedBy: null,
-    updatedAtMs: null,
-  },
-  {
-    templateId: 'starter-aligner-review',
-    title: 'Aligner review (starter)',
-    body: [
-      'Aligner review',
-      'Currently on aligner [Aligner number] of [Total aligners]',
-      'Fit and tracking: [Tracking: good / poor, see notes]',
-      'Attachments: [Attachments: all present / replaced]',
-      'IPR: [IPR: none / done as planned]',
-      'Compliance: [Compliance: good / reinforced]',
-      'Next aligners issued: [Next aligners]',
-      'Next review: [Next review]',
-    ].join('\n'),
-    active: true,
-    starter: true,
-    updatedBy: null,
-    updatedAtMs: null,
-  },
-];
+export const STARTER_TEMPLATES: readonly NoteTemplate[] = STARTER_TEMPLATE_DATA.map((t) => ({
+  templateId: t.id,
+  title: `${t.title} (starter)`,
+  body: t.lines.join('\n'),
+  active: true,
+  starter: true,
+  updatedBy: null,
+  updatedAtMs: null,
+}));

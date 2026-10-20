@@ -41,6 +41,32 @@ describe('note templates', () => {
     expect(checkTemplate('Name', 'Empty [] blank').ok).toBe(false);
   });
 
+  it('ships a full set of starter templates with unique IDs and names', () => {
+    expect(STARTER_TEMPLATES.length).toBeGreaterThanOrEqual(15);
+    expect(new Set(STARTER_TEMPLATES.map((t) => t.templateId)).size).toBe(STARTER_TEMPLATES.length);
+    expect(new Set(STARTER_TEMPLATES.map((t) => t.title)).size).toBe(STARTER_TEMPLATES.length);
+    // Earlier starter IDs are kept, so audit records that name them still make sense.
+    for (const id of ['starter-examination', 'starter-composite', 'starter-extraction', 'starter-hygiene', 'starter-aligner-review']) {
+      expect(STARTER_TEMPLATES.some((t) => t.templateId === id)).toBe(true);
+    }
+  });
+
+  it('gives every starter template blanks with short, consistent names', () => {
+    for (const t of STARTER_TEMPLATES) {
+      const fields = templateFields(t.body);
+      expect(fields.length).toBeGreaterThan(0);
+      for (const f of fields) expect(f.label.length).toBeLessThanOrEqual(40);
+      // A blank used twice in one template must offer the same options, or the second would be ignored.
+      const seen = new Map<string, string>();
+      for (const m of t.body.matchAll(/\[([^\[\]\n]{1,120})\]/g)) {
+        const [label, opts = ''] = m[1]!.split(/:(.*)/s);
+        const k = label!.trim().toLowerCase();
+        if (seen.has(k)) expect(opts.trim(), `${t.title}: ${label}`).toBe(seen.get(k));
+        else seen.set(k, opts.trim());
+      }
+    }
+  });
+
   it('ships starter templates that are valid, marked as starters, and use Aura tooth notation', () => {
     for (const t of STARTER_TEMPLATES) {
       expect(checkTemplate(t.title, t.body).ok).toBe(true);
