@@ -90,6 +90,11 @@ export function AdminScreen({
   }
 
   const configuredIds = new Set(setup.clinicians.map((c) => c.practitionerId));
+  /** Switched on in AuraNoteTaker. */
+  const onIds = new Set(setup.clinicians.filter((c) => c.active).map((c) => c.practitionerId));
+  /** Switched off here on purpose (e.g. duplicates in Dentally): hidden unless asked for. */
+  const offIds = new Set(setup.clinicians.filter((c) => !c.active).map((c) => c.practitionerId));
+  const isHidden = (p: { practitionerId: string; active: boolean }) => !onIds.has(p.practitionerId) && (!p.active || offIds.has(p.practitionerId));
   const configuredRooms = new Set(setup.surgeries.map((s) => s.roomId));
   const activeClinicians = setup.clinicians.filter((c) => c.active);
 
@@ -128,11 +133,11 @@ export function AdminScreen({
         <>
           <section className="setup-group" aria-labelledby="clinicians-heading">
             <h2 id="clinicians-heading">Clinicians</h2>
-            <p className="setup-lead">Tick the Dentally practitioners whose diaries AuraNoteTaker should use. Only practitioners active in Dentally are shown.</p>
+            <p className="setup-lead">Tick the Dentally practitioners whose diaries AuraNoteTaker should use. Practitioners inactive in Dentally, and any you have switched off here, are hidden.</p>
             <ul className="admin-list">
               {setup.dentally.practitioners
                 // Active Dentally practitioners only, plus anyone already set up (so they can be switched off).
-                .filter((p) => showInactive || p.active || configuredIds.has(p.practitionerId))
+                .filter((p) => showInactive || !isHidden(p))
                 .map((p) => {
                 const d = clinicians[p.practitionerId] ?? { include: false, type: 'DENTIST' as ClinicianType };
                 return (
@@ -161,9 +166,11 @@ export function AdminScreen({
                 );
               })}
             </ul>
-            {setup.dentally.practitioners.some((p) => !p.active && !configuredIds.has(p.practitionerId)) && (
+            {setup.dentally.practitioners.some(isHidden) && (
               <button type="button" className="link-button" onClick={() => setShowInactive((v) => !v)}>
-                {showInactive ? 'Hide practitioners inactive in Dentally' : 'Show practitioners inactive in Dentally'}
+                {showInactive
+                  ? 'Hide switched-off and inactive practitioners'
+                  : `Show ${setup.dentally.practitioners.filter(isHidden).length} switched-off or inactive practitioners`}
               </button>
             )}
             <button
