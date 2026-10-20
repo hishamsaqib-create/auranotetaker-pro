@@ -3,6 +3,8 @@ name: Deploy
 # Deploys main to the AuraNoteTaker app in Base44 once CI has passed on it, so no one has to deploy from a laptop.
 # Needs one repository secret, BASE44_API_KEY (a Base44 workspace API key, starts with b44k_), added by Hisham in
 # GitHub: Settings > Secrets and variables > Actions. The value never appears in this repository or in logs.
+# Workspace API keys need a higher Base44 plan than Aura has today, so until the secret exists this workflow
+# skips with a notice, and deploys run from the Mac with scripts/mac/Deploy AuraNoteTaker.command.
 #
 # SAFETY: only commits on main that passed CI are deployed. Changes with a clinical-safety impact reach main only
 # through a pull request that Hisham approves (CLAUDE.md, "Escalate, do not decide").
@@ -39,14 +41,20 @@ jobs:
       - name: Check the deploy key is set
         env:
           BASE44_API_KEY: ${{ secrets.BASE44_API_KEY }}
+        id: key
         run: |
           if [ -z "$BASE44_API_KEY" ]; then
-            echo "::error::Add the BASE44_API_KEY repository secret (Settings > Secrets and variables > Actions)."
-            exit 1
+            echo "::notice::No BASE44_API_KEY secret: skipping the automatic deploy. Use Deploy AuraNoteTaker.command on the Mac."
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=true" >> "$GITHUB_OUTPUT"
           fi
-      - run: npm run check:shared
-      - run: npm run build
+      - if: steps.key.outputs.present == 'true'
+        run: npm run check:shared
+      - if: steps.key.outputs.present == 'true'
+        run: npm run build
       - name: Deploy entities, functions and site
+        if: steps.key.outputs.present == 'true'
         env:
           BASE44_API_KEY: ${{ secrets.BASE44_API_KEY }}
           BASE44_APP_ID: 6ad7288395750d0c318dc063
