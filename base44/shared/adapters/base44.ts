@@ -461,9 +461,15 @@ export class Base44ClinicDirectory implements ClinicDirectory, ClinicAdminStore 
     return (await allRows(this.entity('Surgery'), { clinic_id: clinicId })).map(rowToSurgery);
   }
 
-  async saveSurgeryRecords(clinicId: string, records: readonly Omit<SurgeryRecord, 'surgeryId'>[]): Promise<void> {
+  async saveSurgeryRecords(clinicId: string, records: readonly (Omit<SurgeryRecord, 'surgeryId'> & { surgeryId?: string | null })[]): Promise<void> {
     for (const r of records) {
       const data = compact({ clinic_id: clinicId, name: r.name, dentally_room_id: r.roomId, active: r.active });
+      if (r.surgeryId) {
+        const mine = (await allRows(this.entity('Surgery'), { clinic_id: clinicId })).find((x) => x.id === r.surgeryId);
+        if (!mine?.id) throw new AppError('VALIDATION', 'That surgery no longer exists. Refresh the page.');
+        await this.entity('Surgery').update(mine.id, data);
+        continue;
+      }
       const existing = r.roomId ? await allRows(this.entity('Surgery'), { clinic_id: clinicId, dentally_room_id: r.roomId }) : [];
       if (existing.length > 1) throw new AppError('INTERNAL', UNREADABLE);
       if (existing[0]?.id) await this.entity('Surgery').update(existing[0].id, data);

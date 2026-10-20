@@ -1132,25 +1132,34 @@ export async function saveClinicians(ctx: StaffContext, deps: HandlerDeps, input
 /** Chooses which Dentally rooms are surgeries in AuraNoteTaker, checked against Dentally's own list. */
 export async function saveSurgeries(ctx: StaffContext, deps: HandlerDeps, input: { surgeries?: unknown }): Promise<ClinicSetupResponse> {
   await requireRole(ctx, deps, ['CLINIC_ADMIN'], 'saveSurgeries');
-  const items = reqList(input.surgeries, 'surgeries').map((raw) => {
-    const r = (raw ?? {}) as Record<string, unknown>;
-    return { roomId: reqId(r.roomId, 'room'), active: reqBool(r.active, 'active') };
-  });
-  const known = new Map((await callDentally(() => deps.dentally.listRooms())).map((room) => [room.roomId, room]));
-  const records = items.map((i) => {
-    const room = known.get(i.roomId);
-    if (!room) throw new AppError('VALIDATION', 'One of those surgeries is not in Dentally. Refresh the page and try again.');
-    return { roomId: room.roomId, name: room.name, active: i.active };
+  const raw = reqList(input.surgeries, 'surgeries').map((x) => (x ?? {}) as Record<string, unknown>);
+  const existing = await deps.admin.listSurgeryRecords(deps.clinic.clinicId);
+  const needsDentally = raw.some((r) => r.roomId !== undefined && r.roomId !== null);
+  const known = needsDentally ? new Map((await callDentally(() => deps.dentally.listRooms())).map((room) => [room.roomId, room])) : new Map();
+  const records = raw.map((r) => {
+    const active = reqBool(r.active, 'active');
+    if (r.roomId !== undefined && r.roomId !== null) {
+      // A Dentally room: its name always comes from Dentally.
+      const room = known.get(reqId(r.roomId, 'room'));
+      if (!room) throw new AppError('VALIDATION', 'One of those surgeries is not in Dentally. Refresh the page and try again.');
+      return { roomId: room.roomId, name: room.name, active };
+    }
+    // A surgery named here, for when Dentally lists no rooms. It is not linked to a Dentally room.
+    const name = reqName(r.name, 'surgery name');
+    const surgeryId = optId(r.surgeryId, 'surgery');
+    if (surgeryId && !existing.some((x) => x.surgeryId === surgeryId && x.roomId === null)) {
+      throw new AppError('VALIDATION', 'That surgery no longer exists. Refresh the page.');
+    }
+    if (!surgeryId && existing.some((x) => x.roomId === null && x.name.toLowerCase() === name.toLowerCase())) {
+      throw new AppError('VALIDATION', `There is already a surgery called ${name}.`);
+    }
+    return { surgeryId, roomId: null, name, active };
   });
   await deps.admin.saveSurgeryRecords(deps.clinic.clinicId, records);
   await auditAfterChange(ctx, deps, 'CONFIG_CHANGED', { details: { entity: 'SURGERY', change: 'SAVED', count: records.length } });
   return clinicSetup(deps);
 }
 
-/**
- * Adds or changes a staff member's access. Their roles exist only here: the Base44 user record is never
- * trusted for roles. The last active practice manager cannot remove their own access.
- */
 export async function saveStaffProfile(
   ctx: StaffContext,
   deps: HandlerDeps,

@@ -128,10 +128,12 @@ export class StaticClinicDirectory implements ClinicDirectory, ClinicAdminStore 
     return clinicId === this.#clinicId ? this.#surgeries.map((s) => ({ ...s })) : [];
   }
 
-  async saveSurgeryRecords(clinicId: string, records: readonly Omit<SurgeryRecord, 'surgeryId'>[]): Promise<void> {
+  async saveSurgeryRecords(clinicId: string, records: readonly (Omit<SurgeryRecord, 'surgeryId'> & { surgeryId?: string | null })[]): Promise<void> {
     if (clinicId !== this.#clinicId) throw new Error('Unknown clinic');
     for (const r of records) {
-      const i = this.#surgeries.findIndex((s) => s.roomId !== null && s.roomId === r.roomId);
+      const i = r.surgeryId
+        ? this.#surgeries.findIndex((s) => s.surgeryId === r.surgeryId)
+        : this.#surgeries.findIndex((s) => s.roomId !== null && s.roomId === r.roomId);
       if (i >= 0) this.#surgeries[i] = { ...this.#surgeries[i]!, name: r.name, active: r.active };
       else this.#surgeries.push({ surgeryId: `SURGERY-${this.#nextSurgery++}`, name: r.name, roomId: r.roomId, active: r.active });
     }

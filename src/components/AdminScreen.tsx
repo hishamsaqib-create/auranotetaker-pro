@@ -37,6 +37,10 @@ export function AdminScreen({
   const [busy, setBusy] = useState(false);
   const [clinicians, setClinicians] = useState<Record<string, { include: boolean; type: ClinicianType }>>({});
   const [rooms, setRooms] = useState<Record<string, boolean>>({});
+  /** Surgeries named here (not Dentally rooms), keyed by their saved ID. */
+  const [named, setNamed] = useState<Record<string, boolean>>({});
+  const [newSurgery, setNewSurgery] = useState('');
+  const [showInactive, setShowInactive] = useState(false);
   const [profile, setProfile] = useState<StaffProfileInput>(emptyProfile);
 
   const apply = useCallback((s: ClinicSetupResponse) => {
@@ -52,6 +56,7 @@ export function AdminScreen({
     setRooms(
       Object.fromEntries((s.dentally?.rooms ?? []).map((r) => [r.roomId, s.surgeries.find((x) => x.roomId === r.roomId)?.active ?? false])),
     );
+    setNamed(Object.fromEntries(s.surgeries.filter((x) => x.roomId === null).map((x) => [x.surgeryId, x.active])));
   }, []);
 
   useEffect(() => {
@@ -123,9 +128,12 @@ export function AdminScreen({
         <>
           <section className="setup-group" aria-labelledby="clinicians-heading">
             <h2 id="clinicians-heading">Clinicians</h2>
-            <p className="setup-lead">Tick the Dentally practitioners whose diaries AuraNoteTaker should use.</p>
+            <p className="setup-lead">Tick the Dentally practitioners whose diaries AuraNoteTaker should use. Only practitioners active in Dentally are shown.</p>
             <ul className="admin-list">
-              {setup.dentally.practitioners.map((p) => {
+              {setup.dentally.practitioners
+                // Active Dentally practitioners only, plus anyone already set up (so they can be switched off).
+                .filter((p) => showInactive || p.active || configuredIds.has(p.practitionerId))
+                .map((p) => {
                 const d = clinicians[p.practitionerId] ?? { include: false, type: 'DENTIST' as ClinicianType };
                 return (
                   <li key={p.practitionerId} className="admin-row">
@@ -153,6 +161,11 @@ export function AdminScreen({
                 );
               })}
             </ul>
+            {setup.dentally.practitioners.some((p) => !p.active && !configuredIds.has(p.practitionerId)) && (
+              <button type="button" className="link-button" onClick={() => setShowInactive((v) => !v)}>
+                {showInactive ? 'Hide practitioners inactive in Dentally' : 'Show practitioners inactive in Dentally'}
+              </button>
+            )}
             <button
               type="button"
               className="button button-primary"
@@ -173,18 +186,18 @@ export function AdminScreen({
 
           <section className="setup-group" aria-labelledby="surgeries-heading">
             <h2 id="surgeries-heading">Surgeries</h2>
-            <p className="setup-lead">Tick the Dentally rooms that are surgeries with a computer running AuraNoteTaker.</p>
+            <p className="setup-lead">Tick the surgeries with a computer running AuraNoteTaker.</p>
             {setup.dentally.rooms.length === 0 && (
-              <Notice tone="warn" title="Dentally sent no rooms that AuraNoteTaker could read">
-                Dentally returned {setup.roomsReport?.returned ?? 0} room{setup.roomsReport?.returned === 1 ? '' : 's'}
-                {setup.roomsReport?.bySite ? ' (asked site by site)' : ''}.
+              <Notice tone="info" title="Dentally does not list your surgery rooms">
+                Add your surgeries by name below instead. Dentally returned {setup.roomsReport?.returned ?? 0} room
+                {setup.roomsReport?.returned === 1 ? '' : 's'}
+                {setup.roomsReport?.bySite ? ' (asked site by site)' : ''}
                 {setup.roomsReport && Object.keys(setup.roomsReport.rejected).length > 0
-                  ? ` Not readable: ${Object.entries(setup.roomsReport.rejected)
+                  ? `; not readable: ${Object.entries(setup.roomsReport.rejected)
                       .map(([reason, n]) => `${n} ${reason.toLowerCase().replace(/_/g, ' ')}`)
-                      .join(', ')}.`
+                      .join(', ')}`
                   : ''}
-                {setup.roomsReport && setup.roomsReport.fieldNames.length > 0 ? ` Fields: ${setup.roomsReport.fieldNames.join(', ')}.` : ''} Send this
-                message to whoever supports AuraNoteTaker.
+                {setup.roomsReport && setup.roomsReport.fieldNames.length > 0 ? ` (fields: ${setup.roomsReport.fieldNames.join(', ')})` : ''}.
               </Notice>
             )}
             <ul className="admin-list">
@@ -197,18 +210,51 @@ export function AdminScreen({
                   </label>
                 </li>
               ))}
+              {setup.surgeries
+                .filter((x) => x.roomId === null)
+                .map((x) => (
+                  <li key={x.surgeryId} className="admin-row">
+                    <label className="admin-check">
+                      <input
+                        type="checkbox"
+                        checked={named[x.surgeryId] ?? false}
+                        onChange={(e) => setNamed((prev) => ({ ...prev, [x.surgeryId]: e.target.checked }))}
+                      />
+                      <span>{x.name}</span>
+                    </label>
+                  </li>
+                ))}
             </ul>
+            <div className="admin-add">
+              <label className="field">
+                <span className="field-label">Add a surgery</span>
+                <input className="input" value={newSurgery} maxLength={40} placeholder="For example, Surgery 1" onChange={(e) => setNewSurgery(e.target.value)} />
+              </label>
+              <button
+                type="button"
+                className="button button-secondary"
+                disabled={busy || newSurgery.trim().length === 0}
+                onClick={() =>
+                  void save('Surgery', () => backend.saveSurgeries([{ surgeryId: null, name: newSurgery.trim(), active: true }]), () => setNewSurgery(''))
+                }
+              >
+                Add surgery
+              </button>
+            </div>
             <button
               type="button"
               className="button button-primary"
               disabled={busy}
               onClick={() =>
                 void save('Surgeries', () =>
-                  backend.saveSurgeries(
-                    Object.entries(rooms)
+                  backend.saveSurgeries([
+                    ...Object.entries(rooms)
                       .filter(([id, on]) => on || configuredRooms.has(id))
                       .map(([roomId, active]) => ({ roomId, active })),
-                  ),
+                    ...setup.surgeries
+                      .filter((x) => x.roomId === null)
+                      .map((x) => ({ surgeryId: x.surgeryId, name: x.name, active: named[x.surgeryId] ?? false })),
+                  ]),
                 )
               }
             >

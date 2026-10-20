@@ -81,8 +81,11 @@ export interface ClinicAdminStore {
   saveClinicianRecords(clinicId: string, records: readonly ClinicianRecord[]): Promise<void>;
   /** All surgeries, active or not. */
   listSurgeryRecords(clinicId: string): Promise<SurgeryRecord[]>;
-  /** Creates or updates each surgery, matched by Dentally room ID. `surgeryId` is ignored for new ones. */
-  saveSurgeryRecords(clinicId: string, records: readonly Omit<SurgeryRecord, 'surgeryId'>[]): Promise<void>;
+  /**
+   * Creates or updates each surgery: matched by `surgeryId` when given, otherwise by Dentally room ID; a record
+   * with neither is created (a surgery named by the practice manager, for when Dentally lists no rooms).
+   */
+  saveSurgeryRecords(clinicId: string, records: readonly (Omit<SurgeryRecord, 'surgeryId'> & { surgeryId?: string | null })[]): Promise<void>;
   listStaff(clinicId: string): Promise<StaffProfileRecord[]>;
   /** Creates or updates the profile, matched by email. */
   saveStaff(clinicId: string, record: StaffProfileRecord): Promise<void>;

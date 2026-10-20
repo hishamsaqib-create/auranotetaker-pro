@@ -1495,3 +1495,16 @@ input {
   background: var(--bad);
   color: #fff;
 }
+
+.admin-add {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px;
+  margin: 12px 0 16px;
+}
+
+.admin-add .field {
+  flex: 1 1 260px;
+  margin: 0;
+}

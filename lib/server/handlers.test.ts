@@ -491,6 +491,14 @@ describe('clinic setup', () => {
   it('only configures surgeries for rooms Dentally knows', async () => {
     const d = deps();
     await expectAppError(saveSurgeries(manager, d, { surgeries: [{ roomId: 'NO-ROOM', active: true }] }), 'VALIDATION');
+    // Surgeries can be named here when Dentally lists no rooms; names are unique.
+    const named = await saveSurgeries(manager, d, { surgeries: [{ surgeryId: null, name: 'Surgery 5', active: true }] });
+    const five = named.surgeries.find((x) => x.name === 'Surgery 5')!;
+    expect(five).toMatchObject({ roomId: null, active: true });
+    await expectAppError(saveSurgeries(manager, d, { surgeries: [{ surgeryId: null, name: 'surgery 5', active: true }] }), 'VALIDATION');
+    const off = await saveSurgeries(manager, d, { surgeries: [{ surgeryId: five.surgeryId, name: 'Surgery 5', active: false }] });
+    expect(off.surgeries.find((x) => x.surgeryId === five.surgeryId)!.active).toBe(false);
+    await expectAppError(saveSurgeries(manager, d, { surgeries: [{ surgeryId: 'NOPE', name: 'X', active: true }] }), 'VALIDATION');
     const r = await saveSurgeries(manager, d, { surgeries: [{ roomId: 'DEMO-R2', active: false }] });
     expect(r.surgeries.find((s) => s.roomId === 'DEMO-R2')?.active).toBe(false);
   });

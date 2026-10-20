@@ -102,7 +102,8 @@ export function parsePractitioner(raw: unknown): ParseResult<PractitionerSummary
       practitionerId,
       userId: toId(user.id),
       displayName: name,
-      active: raw.active === undefined ? true : raw.active === true,
+      // Inactive if Dentally marks the practitioner or their user account inactive.
+      active: raw.active !== false && user.active !== false,
     },
   };
 }

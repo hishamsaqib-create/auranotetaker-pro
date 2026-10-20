@@ -82,10 +82,8 @@ export interface ClinicianChoice {
   active: boolean;
 }
 
-export interface SurgeryChoice {
-  roomId: string;
-  active: boolean;
-}
+/** A Dentally room (`roomId`), or a surgery named in AuraNoteTaker (`name`, with `surgeryId` once saved). */
+export type SurgeryChoice = { roomId: string; active: boolean } | { surgeryId: string | null; name: string; active: boolean };
 
 export interface StaffProfileInput {
   email: string;
