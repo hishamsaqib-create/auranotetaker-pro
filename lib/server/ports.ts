@@ -3,6 +3,7 @@
 // hosting decision (docs/architecture.md section 8) reversible.
 
 import type { AuditEvent } from '../core/audit.ts';
+import type { NoteTemplate } from '../core/noteTemplates.ts';
 import type { ScribeSession } from '../core/session.ts';
 import type { DentallyReadService } from '../dentally/types.ts';
 import type { ContentCipher } from './cipher.ts';
@@ -88,6 +89,13 @@ export interface ClinicAdminStore {
   listStaff(clinicId: string): Promise<StaffProfileRecord[]>;
   /** Creates or updates the profile, matched by email. */
   saveStaff(clinicId: string, record: StaffProfileRecord): Promise<void>;
+  /** The clinic's own note templates (not the starters), active or not. */
+  listNoteTemplates(clinicId: string): Promise<NoteTemplate[]>;
+  /** Creates (templateId null) or updates a template. Returns its ID. */
+  saveNoteTemplate(
+    clinicId: string,
+    t: { templateId: string | null; title: string; body: string; active: boolean; updatedBy: string; updatedAtMs: number },
+  ): Promise<string>;
 }
 
 export class VersionConflictError extends Error {

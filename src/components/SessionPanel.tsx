@@ -7,6 +7,8 @@ import type { SessionRestriction } from '../../lib/server/handlers.ts';
 import type { AppBackend } from '../backend/types.ts';
 import { BackendError } from '../backend/types.ts';
 import { LockIcon } from './icons.tsx';
+import { confirmLeaveNote } from '../scribe/noteGuard.ts';
+import { NoteWriter } from './NoteWriter.tsx';
 import { Notice } from './Notice.tsx';
 import type { ScribeWorkspaceProps } from './ScribeWorkspace.tsx';
 import { ScribeWorkspace } from './ScribeWorkspace.tsx';
@@ -28,6 +30,8 @@ export interface SessionPanelProps {
   /** Close the panel. `declinedAppointmentId` is set when the patient declined the scribe. */
   onClose: (declinedAppointmentId: string | null) => void;
   onReload: () => void;
+  /** Practice managers edit the clinic's note templates. */
+  canManageTemplates?: boolean;
   /** Tests only: fake microphone and speech-to-text. */
   scribeDevices?: Pick<ScribeWorkspaceProps, 'startCapture' | 'listMicrophones' | 'connect'>;
 }
@@ -53,6 +57,7 @@ export function SessionPanel(p: SessionPanelProps) {
   );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<BackendError | null>(null);
+  const [writingNote, setWritingNote] = useState(false);
   const appt = p.session.patient.appointment;
   const s = p.session;
 
@@ -86,7 +91,10 @@ export function SessionPanel(p: SessionPanelProps) {
     }
   }
 
-  const cancel = () => void act(() => p.backend.cancelSession(s.sessionId, s.version), () => p.onClose(null));
+  const cancel = () => {
+    if (!confirmLeaveNote()) return;
+    void act(() => p.backend.cancelSession(s.sessionId, s.version), () => p.onClose(null));
+  };
   const answer = (given: boolean) => void act(() => p.backend.recordConsent(s.sessionId, given, s.version, p.currentSurgeryId));
 
   const name = display.status === 'ok' ? display.patient.displayName : display.status === 'loading' ? 'Loading patient…' : `Patient ${lockedId}`;
@@ -235,13 +243,30 @@ export function SessionPanel(p: SessionPanelProps) {
                 nothing about this appointment will be sent for AI processing.
               </p>
               <div className="actions">
-                <button type="button" className="button button-primary" onClick={() => p.onClose(appt.appointmentId)}>
+                <button type="button" className="button button-primary" onClick={() => confirmLeaveNote() && p.onClose(appt.appointmentId)}>
                   Done
                 </button>
               </div>
             </section>
           )}
         </>
+      )}
+      {!p.restriction && s.status !== 'PATIENT_CONFIRMED' && (
+        <section className="step note-step" aria-label="Note">
+          {writingNote ? (
+            <NoteWriter
+              backend={p.backend}
+              // The locked patient's name and date of birth, as looked up by the locked patient ID.
+              patientLabel={display.status === 'ok' ? `${display.patient.displayName}, born ${dob}` : `Dentally patient ${lockedId}`}
+              sessionId={s.sessionId}
+              canManageTemplates={p.canManageTemplates ?? false}
+            />
+          ) : (
+            <button type="button" className="button button-secondary" onClick={() => setWritingNote(true)}>
+              Write the note from a template
+            </button>
+          )}
+        </section>
       )}
     </div>
   );

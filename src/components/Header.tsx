@@ -15,10 +15,12 @@ export interface HeaderProps {
   onChangeSetup?: () => void;
   /** Shown to practice managers. */
   onOpenAdmin?: () => void;
+  /** Writing a note from a template, outside a session. */
+  onOpenNotes?: () => void;
   onSignOut: () => void;
 }
 
-export function Header({ user, clinicianName, surgeryName, now, timeZone, dentally, onChangeSetup, onOpenAdmin, onSignOut }: HeaderProps) {
+export function Header({ user, clinicianName, surgeryName, now, timeZone, dentally, onChangeSetup, onOpenAdmin, onOpenNotes, onSignOut }: HeaderProps) {
   return (
     <header className="topbar">
       <div className="brand">
@@ -55,6 +57,11 @@ export function Header({ user, clinicianName, surgeryName, now, timeZone, dental
 
       <div className="topbar-user">
         <span className="user-name">{user.displayName}</span>
+        {onOpenNotes && (
+          <button type="button" className="link-button" onClick={onOpenNotes}>
+            Write a note
+          </button>
+        )}
         {onOpenAdmin && (
           <button type="button" className="link-button" onClick={onOpenAdmin}>
             Clinic setup

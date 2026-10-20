@@ -10,6 +10,7 @@ import type {
   DentallyCheckResponse,
   DiaryResponse,
   MeResponse,
+  NoteTemplatesResponse,
   NurseNoteResponse,
   PatientSummaryResponse,
   RecordingAction,
@@ -68,6 +69,10 @@ export interface AppBackend {
   saveClinicians(clinicians: ClinicianChoice[]): Promise<ClinicSetupResponse>;
   saveSurgeries(surgeries: SurgeryChoice[]): Promise<ClinicSetupResponse>;
   saveStaffProfile(profile: StaffProfileInput): Promise<ClinicSetupResponse>;
+  listNoteTemplates(includeInactive?: boolean): Promise<NoteTemplatesResponse>;
+  saveNoteTemplate(t: { templateId: string | null; title: string; body: string; active: boolean }): Promise<NoteTemplatesResponse & { templateId: string }>;
+  /** Audit only: a finished note was copied for Dentally. Never sends the note text. */
+  recordNoteCopied(input: { sessionId: string | null; templateId: string | null; unfilledCount: number }): Promise<{ recorded: true }>;
   /** Practice manager: today's Dentally diary counted by practitioner and room ID (no patient data). */
   getDentallyCheck(): Promise<DentallyCheckResponse>;
   changeRecording(sessionId: string, surgeryId: string, action: RecordingAction, expectedVersion: number): Promise<RecordingResponse>;

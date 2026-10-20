@@ -7,6 +7,8 @@ import type { ScribeOutcome, SessionRestriction, SetupOptionsResponse } from '..
 import type { AppBackend, CurrentUser } from './backend/types.ts';
 import { BackendError } from './backend/types.ts';
 import { AdminScreen } from './components/AdminScreen.tsx';
+import { NoteWriter } from './components/NoteWriter.tsx';
+import { confirmLeaveNote } from './scribe/noteGuard.ts';
 import { DemoBanner } from './components/DemoBanner.tsx';
 import { FirstRun } from './components/FirstRun.tsx';
 import { Header } from './components/Header.tsx';
@@ -116,6 +118,7 @@ function Workspace({
   const isAdmin = user.roles.includes('CLINIC_ADMIN');
   const isClinical = user.roles.some((r) => r === 'DENTIST' || r === 'THERAPIST' || r === 'HYGIENIST' || r === 'NURSE');
   const [showAdmin, setShowAdmin] = useState(isAdmin && !isClinical);
+  const [showNotes, setShowNotes] = useState(false);
 
   useEffect(() => {
     backend
@@ -185,10 +188,27 @@ function Workspace({
       dentally={dentallyStatus}
       onChangeSetup={showAdmin || (session && !restriction) ? undefined : () => setEditingSetup(true)}
       onOpenAdmin={isAdmin && !showAdmin && !session ? () => setShowAdmin(true) : undefined}
+      // In a session the note is written from the session panel, against its locked patient.
+      onOpenNotes={isClinical && !showAdmin && !showNotes && !session ? () => setShowNotes(true) : undefined}
       onSignOut={onSignOut}
     />
   );
   const banner = backend.demo ? <DemoBanner demo={backend.demo} timeZone={timeZone} onScenarioChange={diary.refresh} /> : null;
+
+  if (showNotes && !session) {
+    return (
+      <div className="app">
+        {header}
+        {banner}
+        <main className="setup notes-screen">
+          <button type="button" className="link-button" onClick={() => confirmLeaveNote() && setShowNotes(false)}>
+            Back to the clinical screen
+          </button>
+          <NoteWriter backend={backend} patientLabel={null} sessionId={null} canManageTemplates={isAdmin} />
+        </main>
+      </div>
+    );
+  }
 
   if (showAdmin) {
     return (
@@ -297,7 +317,8 @@ function Workspace({
             clinicianName={options.clinicians.find((c) => c.practitionerId === session.clinicianId)?.displayName ?? clinician.displayName}
             surgeryName={options.surgeries.find((x) => x.surgeryId === session.surgeryId)?.name ?? null}
             onSessionChange={setSession}
-            onReload={() => void reloadSession()}
+            onReload={() => confirmLeaveNote() && void reloadSession()}
+            canManageTemplates={isAdmin}
             onClose={(declinedAppointmentId) => {
               if (declinedAppointmentId) setLocalOutcomes((prev) => ({ ...prev, [declinedAppointmentId]: 'DECLINED' }));
               setSession(null);

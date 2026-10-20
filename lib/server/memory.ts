@@ -2,6 +2,7 @@
 // Nothing here is persisted; closing the tab clears it.
 
 import type { AuditEvent } from '../core/audit.ts';
+import type { NoteTemplate } from '../core/noteTemplates.ts';
 import type { ScribeSession } from '../core/session.ts';
 import { isTerminal } from '../core/session.ts';
 import type {
@@ -137,6 +138,30 @@ export class StaticClinicDirectory implements ClinicDirectory, ClinicAdminStore 
       if (i >= 0) this.#surgeries[i] = { ...this.#surgeries[i]!, name: r.name, active: r.active };
       else this.#surgeries.push({ surgeryId: `SURGERY-${this.#nextSurgery++}`, name: r.name, roomId: r.roomId, active: r.active });
     }
+  }
+
+  readonly #templates: NoteTemplate[] = [];
+  #nextTemplate = 1;
+
+  async listNoteTemplates(clinicId: string): Promise<NoteTemplate[]> {
+    return clinicId === this.#clinicId ? this.#templates.map((t) => ({ ...t })) : [];
+  }
+
+  async saveNoteTemplate(
+    clinicId: string,
+    t: { templateId: string | null; title: string; body: string; active: boolean; updatedBy: string; updatedAtMs: number },
+  ): Promise<string> {
+    if (clinicId !== this.#clinicId) throw new Error('Unknown clinic');
+    const fields = { title: t.title, body: t.body, active: t.active, updatedBy: t.updatedBy, updatedAtMs: t.updatedAtMs, starter: false };
+    if (t.templateId) {
+      const i = this.#templates.findIndex((x) => x.templateId === t.templateId);
+      if (i < 0) throw new Error('Unknown template');
+      this.#templates[i] = { ...this.#templates[i]!, ...fields };
+      return t.templateId;
+    }
+    const templateId = `TEMPLATE-${this.#nextTemplate++}`;
+    this.#templates.push({ templateId, ...fields });
+    return templateId;
   }
 
   async listStaff(clinicId: string): Promise<StaffProfileRecord[]> {
