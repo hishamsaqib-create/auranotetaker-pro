@@ -9,7 +9,9 @@
       "type": "array",
       "items": { "type": "string", "enum": ["SUPER_ADMIN", "CLINIC_ADMIN", "DENTIST", "THERAPIST", "HYGIENIST", "NURSE", "AUDITOR"] }
     },
-    "clinician_id": { "type": "string", "description": "Dentally practitioner ID when this person is a clinician" },
+    "clinician_id": { "type": "string", "description": "Dentally practitioner ID of a clinician's own diary. Grants access to that clinician's sessions" },
+    "works_with_clinician_id": { "type": "string", "description": "For a nurse, the dentist they usually work with. Preselects a new computer only; grants no access" },
+    "default_surgery_id": { "type": "string", "description": "The surgery this person usually works in, preselected on a new computer" },
     "display_name": { "type": "string" },
     "active": { "type": "boolean", "default": true }
   },

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { NoteTemplate } from '../../lib/core/noteTemplates.ts';
 import { fillTemplate, templateFields, unfilledBlanks } from '../../lib/core/noteTemplates.ts';
+import type { GenerateNoteResponse } from '../../lib/server/handlers.ts';
 import type { AppBackend } from '../backend/types.ts';
 import { setNoteUncopied } from '../scribe/noteGuard.ts';
 import { Notice } from './Notice.tsx';
@@ -15,6 +16,10 @@ export interface NoteWriterProps {
   sessionId: string | null;
   /** Practice managers edit the clinic's templates; everyone else uses them. */
   canManageTemplates: boolean;
+  /** Drafts the note with AI from the session's transcript and notes. Absent when AI may not be used. */
+  generate?: (templateId: string | null, clinicianNotes: string) => Promise<GenerateNoteResponse>;
+  /** Shown instead of the Generate button when AI is not available here, e.g. the patient declined. */
+  generateUnavailable?: string | null;
   /** Injected in tests. */
   copyText?: (text: string) => Promise<void>;
 }
@@ -27,7 +32,7 @@ export interface NoteWriterProps {
  * (inside a session) or that no patient is selected, and warns about blanks still unfilled. The copy is audited
  * without its text. AuraNoteTaker never writes to Dentally; the clinician pastes the note.
  */
-export function NoteWriter({ backend, patientLabel, sessionId, canManageTemplates, copyText }: NoteWriterProps) {
+export function NoteWriter({ backend, patientLabel, sessionId, canManageTemplates, generate, generateUnavailable, copyText }: NoteWriterProps) {
   const [templates, setTemplates] = useState<NoteTemplate[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [templateId, setTemplateId] = useState<string>(BLANK);
@@ -37,6 +42,13 @@ export function NoteWriter({ backend, patientLabel, sessionId, canManageTemplate
   const [copied, setCopied] = useState<string | null>(null);
   const [copyError, setCopyError] = useState<string | null>(null);
   const [managing, setManaging] = useState(false);
+  /** The note holds an AI draft: it must be checked, and ticked as checked, before copying. */
+  const [aiDraft, setAiDraft] = useState(false);
+  const [checkedDraft, setCheckedDraft] = useState(false);
+  /** What the note was before the latest draft, including whether that was itself an AI draft. */
+  const [beforeDraft, setBeforeDraft] = useState<{ text: string; aiDraft: boolean } | null>(null);
+  const [generating, setGenerating] = useState(false);
+  const [generateError, setGenerateError] = useState<string | null>(null);
   /** The template as it was when chosen, so later edits to it cannot change what counts as unfilled. */
   const [chosen, setChosen] = useState<NoteTemplate | null>(null);
   const textRef = useRef(text);
@@ -80,6 +92,8 @@ export function NoteWriter({ backend, patientLabel, sessionId, canManageTemplate
     setValues({});
     setHandEdited(false);
     setCopied(null);
+    setAiDraft(false);
+    setBeforeDraft(null);
     const t = templates?.find((x) => x.templateId === id) ?? null;
     setChosen(t ? { ...t } : null);
     setText(t ? fillTemplate(t.body, {}) : '');
@@ -90,6 +104,28 @@ export function NoteWriter({ backend, patientLabel, sessionId, canManageTemplate
     setValues(next);
     setCopied(null);
     if (template && !handEdited) setText(fillTemplate(template.body, next));
+  }
+
+  async function draftWithAi() {
+    if (!generate) return;
+    setGenerateError(null);
+    setGenerating(true);
+    // What the clinician has written or filled in is part of the source; an untouched template is not.
+    const untouched = template ? fillTemplate(template.body, {}) : '';
+    const own = text.trim() === untouched.trim() ? '' : text;
+    try {
+      const r = await generate(template?.templateId ?? null, own);
+      setBeforeDraft({ text, aiDraft });
+      setText(r.draft);
+      setAiDraft(true);
+      setCheckedDraft(false);
+      setHandEdited(true);
+      setCopied(null);
+    } catch (err) {
+      setGenerateError(err instanceof Error ? err.message : 'The note could not be drafted. Try again, or write it from the template.');
+    } finally {
+      setGenerating(false);
+    }
   }
 
   async function copy() {
@@ -104,7 +140,7 @@ export function NoteWriter({ backend, patientLabel, sessionId, canManageTemplate
     setCopied(remaining.length ? `Copied with ${remaining.length} blank${remaining.length === 1 ? '' : 's'} still in brackets (${remaining.join(', ')}). ${where}` : `Copied. ${where}`);
     // Audit that a note was produced (never its text). A failure here is shown, but the copy has happened.
     backend
-      .recordNoteCopied({ sessionId, templateId: template?.templateId ?? null, unfilledCount: remaining.length })
+      .recordNoteCopied({ sessionId, templateId: template?.templateId ?? null, unfilledCount: remaining.length, aiDraft })
       .catch(() => setCopyError('Copied, but the copy could not be added to the audit trail. Please tell the practice manager.'));
   }
 
@@ -153,7 +189,7 @@ export function NoteWriter({ backend, patientLabel, sessionId, canManageTemplate
 
       <label className="field">
         <span className="field-label">Template</span>
-        <select value={templateId} onChange={(e) => chooseTemplate(e.target.value)} disabled={!templates}>
+        <select value={templateId} onChange={(e) => chooseTemplate(e.target.value)} disabled={!templates || generating}>
           <option value={BLANK}>Blank note (write it yourself)</option>
           {(templates ?? []).map((t) => (
             <option key={t.templateId} value={t.templateId}>
@@ -175,6 +211,7 @@ export function NoteWriter({ backend, patientLabel, sessionId, canManageTemplate
                   className="input"
                   list={f.options.length ? `${id}-options` : undefined}
                   value={values[f.label.toLowerCase()] ?? ''}
+                  disabled={generating}
                   placeholder={f.options.length ? 'Choose or type' : ''}
                   onChange={(e) => setValue(f.label, e.target.value)}
                 />
@@ -191,12 +228,50 @@ export function NoteWriter({ backend, patientLabel, sessionId, canManageTemplate
         </fieldset>
       )}
 
+      {generate ? (
+        <div className="generate-row">
+          <button type="button" className="button button-secondary" disabled={generating || !templates} onClick={() => void draftWithAi()}>
+            {generating ? 'Drafting the note…' : 'Generate note'}
+          </button>
+          <span className="admin-sub">
+            Drafts the note{template ? ' in this template' : ''} from the transcript, the nurse notes and anything you have written below.
+          </span>
+        </div>
+      ) : (
+        generateUnavailable && <p className="admin-sub">{generateUnavailable}</p>
+      )}
+      {generateError && <Notice tone="bad" title={generateError} />}
+      {aiDraft && (
+        <Notice tone="warn" title="AI draft: check every line against what happened before copying">
+          The draft only uses the transcript and notes, but it can still be wrong. Anything in square brackets was not covered or needs checking.
+          {beforeDraft !== null && (
+            <>
+              {' '}
+              <button
+                type="button"
+                className="link-button"
+                onClick={() => {
+                  setText(beforeDraft.text);
+                  setAiDraft(beforeDraft.aiDraft);
+                  setBeforeDraft(null);
+                  setCheckedDraft(false);
+                }}
+              >
+                Undo the draft
+              </button>
+            </>
+          )}
+        </Notice>
+      )}
+
       <label className="field">
         <span className="field-label">Note</span>
         <textarea
           className="note-text"
           value={text}
           rows={14}
+          // Locked while drafting, so nothing typed meanwhile is overwritten by the draft.
+          readOnly={generating}
           placeholder={template ? '' : 'Write the note here.'}
           onChange={(e) => {
             setText(e.target.value);
@@ -234,7 +309,13 @@ export function NoteWriter({ backend, patientLabel, sessionId, canManageTemplate
       {copied && <Notice tone="info" title={copied} />}
       {copyError && <Notice tone="bad" title={copyError} />}
       <div className="actions">
-        <button type="button" className="button button-primary" disabled={!text.trim()} onClick={() => void copy()}>
+        {aiDraft && (
+          <label className="admin-check">
+            <input type="checkbox" checked={checkedDraft} onChange={(e) => setCheckedDraft(e.target.checked)} />
+            <span>I have checked every line of this draft</span>
+          </label>
+        )}
+        <button type="button" className="button button-primary" disabled={!text.trim() || (aiDraft && !checkedDraft)} onClick={() => void copy()}>
           Copy for Dentally
         </button>
         <button
@@ -247,6 +328,8 @@ export function NoteWriter({ backend, patientLabel, sessionId, canManageTemplate
             setValues({});
             setHandEdited(false);
             setCopied(null);
+            setAiDraft(false);
+            setBeforeDraft(null);
           }}
         >
           Clear

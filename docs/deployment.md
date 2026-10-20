@@ -52,6 +52,7 @@ Demo mode shows a permanent banner and lets you switch scenarios (normal day, do
    | `DENTALLY_USER_AGENT` | `AuraNoteTaker/0.1` |
    | `CLINIC_KEY` | `aura` |
    | `SPEECHMATICS_API_KEY` | Phase 2. An API key from the Speechmatics portal. In the portal, keep **Model Training** switched off |
+   | `ANTHROPIC_API_KEY` | Phase 3. A key from console.anthropic.com, used only by the `generateNote` function. Optional `ANTHROPIC_MODEL` overrides the model (default `claude-sonnet-5-5`) |
    | `CONTENT_ENCRYPTION_KEY` | Phase 2. 32 random bytes, base64. Make one with `openssl rand -base64 32` in Terminal and paste it straight into Base44. Losing or changing it makes stored transcripts unreadable (they are deleted by the next day anyway) |
    ```bash
    npx base44 secrets set DENTALLY_USER_AGENT="AuraNoteTaker/0.1" CLINIC_KEY=aura
@@ -112,7 +113,8 @@ Backend secrets (Base44 secret vault):
 | `CONTENT_ENCRYPTION_KEY` | 2 | AES-256-GCM key for transcripts and nurse notes held in Base44 (D2a). Base64 of 32 random bytes |
 
 Retention (D2a): expired transcripts and nurse notes are deleted whenever any surgery screen refreshes its diary and when a recording starts; a failure is shown on screen. A Base44 scheduled job is still to be added, so content is also deleted on days nobody opens the app.
-| `LLM_*` / AWS role | 3 | Bedrock access pinned to one region, per D3 |
+| `ANTHROPIC_API_KEY` | 3 | Drafts notes (D3). Never reaches the browser; requests carry no patient name or date of birth |
+| `ANTHROPIC_MODEL` | 3 | Optional model override |
 | `GOOGLE_DRIVE_*` | 5 | Non-patient knowledge export |
 
 ## 5. Continuous integration

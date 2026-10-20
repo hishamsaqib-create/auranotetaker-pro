@@ -8,6 +8,7 @@ import type { AppBackend } from '../backend/types.ts';
 import { BackendError } from '../backend/types.ts';
 import { LockIcon } from './icons.tsx';
 import { confirmLeaveNote } from '../scribe/noteGuard.ts';
+import { lastTranscriptSeq, pendingSaveProblem } from '../scribe/pendingSaves.ts';
 import { NoteWriter } from './NoteWriter.tsx';
 import { Notice } from './Notice.tsx';
 import type { ScribeWorkspaceProps } from './ScribeWorkspace.tsx';
@@ -260,6 +261,30 @@ export function SessionPanel(p: SessionPanelProps) {
               patientLabel={display.status === 'ok' ? `${display.patient.displayName}, born ${dob}` : `Dentally patient ${lockedId}`}
               sessionId={s.sessionId}
               canManageTemplates={p.canManageTemplates ?? false}
+              // AI drafting only with the patient's permission (decision D7), and not while recording.
+              generate={
+                s.consent.status === 'GIVEN' && s.status !== 'RECORDING'
+                  ? async (templateId, clinicianNotes) => {
+                      // Never draft from part of the appointment: everything captured must be saved first.
+                      const waiting = pendingSaveProblem();
+                      if (waiting) throw new Error(waiting);
+                      return p.backend.generateNote({
+                        sessionId: s.sessionId,
+                        surgeryId: p.currentSurgeryId,
+                        templateId,
+                        clinicianNotes,
+                        lastSeq: lastTranscriptSeq(),
+                      });
+                    }
+                  : undefined
+              }
+              generateUnavailable={
+                s.consent.status !== 'GIVEN'
+                  ? 'The patient did not agree to the AI scribe, so the note cannot be drafted with AI. Write it from a template.'
+                  : s.status === 'RECORDING'
+                    ? 'Pause or stop recording to draft the note with AI.'
+                    : null
+              }
             />
           ) : (
             <button type="button" className="button button-secondary" onClick={() => setWritingNote(true)}>

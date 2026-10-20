@@ -10,8 +10,9 @@ import {
   resolveClinic,
   resolveContext,
   SpeechmaticsTokenIssuer,
+  AnthropicNoteGenerator,
 } from '../base44/shared/adapters/base44.ts';
-import { SpeechServiceError } from '../base44/shared/lib/server/ports.ts';
+import { NoteGeneratorError, SpeechServiceError } from '../base44/shared/lib/server/ports.ts';
 import { createSession, transition } from '../base44/shared/lib/core/session.ts';
 import type { ScribeSession } from '../base44/shared/lib/core/session.ts';
 import { AppError } from '../base44/shared/lib/server/errors.ts';
@@ -334,5 +335,38 @@ describe('SpeechmaticsTokenIssuer', () => {
     expect(await kind(issuer('k', async () => new Response('', { status: 503 })).issue())).toBe('UNAVAILABLE');
     expect(await kind(issuer('k', async () => Promise.reject(new Error('offline'))).issue())).toBe('UNAVAILABLE');
     expect(await kind(issuer('k', async () => new Response('{}', { status: 201 })).issue())).toBe('UNAVAILABLE');
+  });
+});
+
+describe('AnthropicNoteGenerator', () => {
+  const reply = (body: unknown, status = 200) => async () => new Response(JSON.stringify(body), { status });
+
+  it('calls the Messages API with the secret key and default model, and returns the text', async () => {
+    let url = '';
+    let init: RequestInit | undefined;
+    const g = new AnthropicNoteGenerator((n) => (n === 'ANTHROPIC_API_KEY' ? 'sk-secret' : undefined), (async (u: string, i: RequestInit) => {
+      url = u;
+      init = i;
+      return new Response(JSON.stringify({ model: 'claude-sonnet-5-5', stop_reason: 'end_turn', content: [{ type: 'text', text: 'Note text' }] }));
+    }) as unknown as typeof fetch);
+    const r = await g.generate({ system: 'sys', prompt: 'p', maxTokens: 100 });
+    expect(r).toEqual({ text: 'Note text', model: 'claude-sonnet-5-5' });
+    expect(url).toBe('https://api.anthropic.com/v1/messages');
+    const headers = init!.headers as Record<string, string>;
+    expect(headers['x-api-key']).toBe('sk-secret');
+    expect(headers['anthropic-version']).toBe('2023-06-01');
+    expect(JSON.parse(String(init!.body))).toMatchObject({ model: 'claude-sonnet-5-5', max_tokens: 100, system: 'sys', messages: [{ role: 'user', content: 'p' }] });
+  });
+
+  it('reports a missing or rejected key, an outage, a refusal and a cut-off draft distinctly', async () => {
+    const kind = (p: Promise<unknown>) => p.then(() => null, (e: NoteGeneratorError) => e.kind);
+    const gen = (secret: string | undefined, f: () => Promise<Response>) => new AnthropicNoteGenerator(() => secret, f as unknown as typeof fetch);
+    const input = { system: 's', prompt: 'p', maxTokens: 10 };
+    expect(await kind(gen(undefined, reply({})).generate(input))).toBe('NOT_CONFIGURED');
+    expect(await kind(gen('k', reply({}, 401)).generate(input))).toBe('AUTH');
+    expect(await kind(gen('k', reply({}, 529)).generate(input))).toBe('UNAVAILABLE');
+    expect(await kind(gen('k', async () => Promise.reject(new Error('offline'))).generate(input))).toBe('UNAVAILABLE');
+    expect(await kind(gen('k', reply({ stop_reason: 'refusal', content: [] })).generate(input))).toBe('REFUSED');
+    expect(await kind(gen('k', reply({ stop_reason: 'max_tokens', content: [{ type: 'text', text: 'half' }] })).generate(input))).toBe('INCOMPLETE');
   });
 });

@@ -18,8 +18,12 @@ export interface StaffContext {
   displayName: string;
   clinicId: string;
   roles: AppRole[];
-  /** Dentally practitioner ID when this person is a clinician. */
+  /** Dentally practitioner ID of a clinician's own diary. Grants access to that clinician's sessions. */
   clinicianId: string | null;
+  /** For a nurse, the dentist they usually work with: only preselects a new computer, grants no access. */
+  worksWithClinicianId?: string | null;
+  /** The surgery this person usually works in, to preselect on a new computer. */
+  defaultSurgeryId?: string | null;
   deviceId?: string | null;
   appVersion?: string | null;
 }
@@ -68,9 +72,18 @@ export interface StaffProfileRecord {
   email: string;
   displayName: string;
   roles: AppRole[];
-  /** Dentally practitioner ID when this person is a clinician. */
+  /** Dentally practitioner ID of a clinician's own diary. Grants access to that clinician's sessions. */
   clinicianId: string | null;
+  /** For a nurse, the dentist they usually work with: preselects a new computer only. */
+  worksWithClinicianId?: string | null;
+  /** The surgery this person usually works in. */
+  defaultSurgeryId?: string | null;
   active: boolean;
+}
+
+/** Sends a Base44 invitation to the AuraNoteTaker app. */
+export interface StaffInviter {
+  invite(email: string): Promise<void>;
 }
 
 /** Configuration reads and writes for the setup screens. Only CLINIC_ADMIN handlers use it. */
@@ -196,4 +209,19 @@ export interface HandlerDeps {
   /** Created on first use, so a missing encryption key only affects scribe content, not the diary. */
   cipher: () => Promise<ContentCipher>;
   speech: SpeechTokenIssuer;
+  invites: StaffInviter;
+  notes: NoteGenerator;
+}
+
+/** A large language model that drafts a clinical note. Text in, text out; never stores anything itself. */
+export interface NoteGenerator {
+  readonly provider: 'ANTHROPIC' | 'DEMO';
+  generate(input: { system: string; prompt: string; maxTokens: number }): Promise<{ text: string; model: string }>;
+}
+
+export class NoteGeneratorError extends Error {
+  constructor(readonly kind: 'NOT_CONFIGURED' | 'AUTH' | 'UNAVAILABLE' | 'REFUSED' | 'INCOMPLETE') {
+    super(`Note generator ${kind}`);
+    this.name = 'NoteGeneratorError';
+  }
 }

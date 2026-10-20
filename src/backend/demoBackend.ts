@@ -14,6 +14,7 @@ import {
   saveTranscript,
   getActiveSession,
   getClinicSetup,
+  generateNote,
   getDentallyCheck,
   listNoteTemplates,
   recordNoteCopied,
@@ -29,7 +30,15 @@ import {
   saveSurgeries,
 } from '../../lib/server/handlers.ts';
 import { AesGcmContentCipher } from '../../lib/server/cipher.ts';
-import { DemoSpeechTokenIssuer, InMemoryAuditSink, InMemoryScribeContentStore, InMemorySessionRepository, StaticClinicDirectory } from '../../lib/server/memory.ts';
+import {
+  DemoNoteGenerator,
+  DemoSpeechTokenIssuer,
+  InMemoryAuditSink,
+  InMemoryScribeContentStore,
+  InMemorySessionRepository,
+  RecordingInviter,
+  StaticClinicDirectory,
+} from '../../lib/server/memory.ts';
 import type { AppRole, HandlerDeps, StaffContext } from '../../lib/server/ports.ts';
 import type { AppBackend, DemoUser } from './types.ts';
 import { BackendError } from './types.ts';
@@ -91,6 +100,8 @@ export function createDemoBackend(opts: DemoBackendOptions = {}): AppBackend {
     content: new InMemoryScribeContentStore(),
     cipher: () => demoCipher,
     speech: new DemoSpeechTokenIssuer(clock),
+    invites: new RecordingInviter(),
+    notes: new DemoNoteGenerator(),
   };
 
   let user: DemoUserRecord | null = null;
@@ -161,6 +172,7 @@ export function createDemoBackend(opts: DemoBackendOptions = {}): AppBackend {
     listNoteTemplates: (includeInactive = false) => run(() => listNoteTemplates(ctx(), deps, { includeInactive })),
     saveNoteTemplate: (t) => run(() => saveNoteTemplate(ctx(), deps, { ...t })),
     recordNoteCopied: (input) => run(() => recordNoteCopied(ctx(), deps, { ...input })),
+    generateNote: (input) => run(() => generateNote(ctx(), deps, { ...input })),
     changeRecording: (sessionId, surgeryId, action, expectedVersion) =>
       run(() => changeRecording(ctx(), deps, { sessionId, surgeryId, action, expectedVersion })),
     getSpeechToken: (sessionId, surgeryId) => run(() => getSpeechToken(ctx(), deps, { sessionId, surgeryId })),

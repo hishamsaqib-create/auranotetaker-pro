@@ -38,7 +38,8 @@ export function Setup({
   onCancel,
 }: {
   options: SetupOptionsResponse;
-  initial: DeviceSetup | null;
+  /** A saved choice, or the person's usual dentist and surgery from their profile. */
+  initial: Partial<DeviceSetup> | null;
   onSave: (setup: DeviceSetup) => void;
   onCancel?: () => void;
 }) {

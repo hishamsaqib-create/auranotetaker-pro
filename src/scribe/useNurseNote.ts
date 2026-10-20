@@ -7,6 +7,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { NurseNote } from '../../lib/core/transcript.ts';
 import type { AppBackend } from '../backend/types.ts';
 import { BackendError } from '../backend/types.ts';
+import { setNurseNotesUnsaved } from './pendingSaves.ts';
 
 export type NurseNoteStatus = 'loading' | 'saved' | 'unsaved' | 'saving' | 'error' | 'conflict';
 
@@ -114,6 +115,10 @@ export function useNurseNote(o: { backend: AppBackend; sessionId: string; surger
     },
     [save],
   );
+
+  useEffect(() => {
+    setNurseNotesUnsaved(status === 'unsaved' || status === 'saving');
+  }, [status]);
 
   useEffect(() => {
     const warn = (e: BeforeUnloadEvent) => {
