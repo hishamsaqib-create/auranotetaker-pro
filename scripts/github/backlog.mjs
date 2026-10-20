@@ -44,26 +44,26 @@ const ac = (items) => '**Acceptance criteria**\n' + items.map((i) => `- [ ] ${i}
 export const issues = [
   // ---------------------------------------------------------------- Phase 1
   {
-    id: 'P1-01', milestone: 'P1', labels: ['phase:1', 'area:infra', 'decision-needed', 'blocked-external'],
+    id: 'P1-01', milestone: 'P1', labels: ['phase:1', 'area:infra', 'blocked-external'],
     title: 'Create Base44 staging and production apps and link the repository',
     body: `**Goal**: a Base44 home for the backend, set up so patient data is only ever stored under the decided hosting option.
 
-**Depends on**: D2 (hosting and data residency) for production. Staging can start with sandbox data only.
+**Decided (D2, 20 October 2026)**: Base44 standard plan, not Enterprise. On that plan Base44 stores data in the US and its terms allow app data to be used to train AI models, with no opt-out. Phase 1 stores only IDs, times and statuses; where Phase 2 keeps transcripts, nurse notes and drafts is follow-up D2a.
 
 ${ac([
   'Separate staging and production Base44 apps exist in the Aura workspace',
-  'Production app is on a plan with UK data residency and AI-training exclusion, or D2 chose another option',
+  'Base44 DPA accepted; the US storage and AI-training terms recorded in the DPIA (P1-14)',
   'Repository linked with `npx base44 scaffold`; `base44/.app.jsonc` not committed',
   'Function runtime and SDK import confirmed by pulling an existing AuraMail function; adapters adjusted if needed',
   'Password login disabled; Microsoft or Google single sign-on enabled',
 ])}`,
   },
   {
-    id: 'P1-02', milestone: 'P1', labels: ['phase:1', 'area:dentally', 'decision-needed', 'blocked-external', 'security'],
+    id: 'P1-02', milestone: 'P1', labels: ['phase:1', 'area:dentally', 'blocked-external', 'security'],
     title: 'Dedicated read-only Dentally credential and sandbox access',
     body: `**Goal**: AuraNoteTaker has its own least-privilege Dentally access, separate from AuraMail's.
 
-**Escalation**: production credentials (D8).
+**Decided (D8, 20 October 2026)**: a separate key for the AuraNoteTaker app, read-only, sandbox first. Hisham enters it straight into the Base44 app's secrets; it is never sent in chat, email or issues.
 
 ${ac([
   'Sandbox credential issued and stored as a staging secret (`DENTALLY_API_TOKEN`, `DENTALLY_BASE_URL`, `DENTALLY_USER_AGENT`)',
@@ -226,12 +226,12 @@ ${ac([
 ])}`,
   },
   {
-    id: 'P1-13', milestone: 'P1', labels: ['phase:1', 'governance', 'decision-needed', 'safety-critical'],
+    id: 'P1-13', milestone: 'P1', labels: ['phase:1', 'governance', 'safety-critical'],
     title: 'Appoint a Clinical Safety Officer; adopt intended purpose and hazard log v0.1',
-    body: `**Escalation**: D4.
+    body: `**Decided (D4, 20 October 2026)**: Jennifer Ingledew. DCB0160 asks that the CSO holds current UK professional registration (for a dental practice, GDC), has clinical experience in the setting, and has clinical risk management training for health IT. If Jennifer is not GDC-registered, she leads the DPIA and the safety work, and a registered clinician signs off as CSO.
 
 ${ac([
-  'CSO named (registered clinician with clinical safety training)',
+  'CSO confirmed against the DCB0160 requirements above, and booked on clinical safety training',
   'Intended purpose statement signed off (docs/clinical-safety.md section 3)',
   'Medical device qualification assessment recorded against the MHRA July 2026 guidance',
   'Hazard log v0.1 reviewed and scored on the DCB0129 matrix',
@@ -241,11 +241,11 @@ ${ac([
   {
     id: 'P1-14', milestone: 'P1', labels: ['phase:1', 'governance', 'security', 'decision-needed'],
     title: 'Start the DPIA and processor due diligence (Base44, speech-to-text, LLM)',
-    body: `**Escalation**: D2, D3, D6.
+    body: `**Decided (20 October 2026)**: Jennifer Ingledew leads (D4); Base44 standard plan, so data is stored in the US and Base44's terms allow app data to be used for AI training (D2); clinical content deleted after three months (D6). **Still open**: D3 (speech-to-text and LLM providers) and D2a (where transcripts and drafts are stored).
 
 ${ac([
   'DPIA drafted covering scribe, generation, audit module and staff monitoring',
-  'Base44 written confirmation on UK residency, training exclusion, sub-processors, special category DPA, backups, breach terms',
+  'Base44 DPA, sub-processors, backups and breach terms reviewed; the US transfer and the AI-training terms assessed against what Base44 will hold',
   'STT and LLM providers\' DPAs, regions, retention and training terms reviewed',
   'Privacy notice and signage drafted; permission script agreed',
   'DPIA signed off before any real patient audio (Phase 2 pilot)',
@@ -399,13 +399,13 @@ ${ac([
 ])}`,
   },
   {
-    id: 'P3-02', milestone: 'P3', labels: ['phase:3', 'area:generation', 'safety-critical', 'decision-needed'],
+    id: 'P3-02', milestone: 'P3', labels: ['phase:3', 'area:generation', 'safety-critical'],
     title: 'Tooth notation module (Palmer and FDI, canonical form, validators)',
-    body: `**Escalation**: D5 (output notation).
+    body: `**Decided (D5, 20 October 2026)**: Aura writes teeth as quadrant and number, for example UR1 for the upper right central incisor. Never tooth numbers such as 8 (US) or 11 (FDI) in the note.
 
 ${ac([
-  'Parses spoken and written forms ("upper right six", "UR6", "16") to a canonical form',
-  'Outputs the clinic\'s notation',
+  'Parses spoken and written forms ("upper right one", "UR1", "11", "8") to a canonical form, flagging FDI and US numbers for checking',
+  'Outputs UR1, UL6, LR7, LL8 style; deciduous teeth as URA to URE (to confirm with Aura\'s clinicians)',
   'Detects invalid teeth, laterality conflicts, mixed notation and mismatches with nurse notes',
   'Exhaustive unit tests including deciduous teeth',
 ])}`,
@@ -493,9 +493,9 @@ ${ac([
 ])}`,
   },
   {
-    id: 'P4-02', milestone: 'P4', labels: ['phase:4', 'area:dentally', 'safety-critical', 'decision-needed', 'blocked-external'],
+    id: 'P4-02', milestone: 'P4', labels: ['phase:4', 'area:dentally', 'safety-critical', 'blocked-external'],
     title: 'Dentally clinical note write-back via API',
-    body: `**Blocked**: Dentally has no public notes endpoint (D1). **Escalation required before the first production write.**
+    body: `**Not planned (D1, 20 October 2026)**: copy and paste into Dentally, with an entry confirmation (P4-01), is the agreed way to deliver notes. Revisit only if Dentally offers a notes API. **Escalation required before any production write.**
 
 ${ac([
   'Only via an official Dentally endpoint; never appointment notes, metadata or screen automation',
@@ -585,6 +585,8 @@ ${ac(['Decision recorded', 'If an offline path is approved: two identifiers, rec
     title: 'Decide the notes data source for historical audit',
     body: `**Blocked**: Dentally exposes no clinical notes through its API (D1).
 
+**Note**: AuraNoteTaker deletes its own copies after three months (D6), so without a Dentally export the audit can only cover notes made through AuraNoteTaker in the last three months.
+
 ${ac(['Source chosen: Dentally API access, official export, or AuraNoteTaker-approved notes only', 'Retention and access controls for any imported notes agreed'])}`,
   },
   {
@@ -617,11 +619,11 @@ ${ac(['Visibility rules decided and implemented', 'Clinicians informed; DPIA cov
     body: `${ac(['Independent penetration test of web app and functions', 'High and critical findings fixed before go-live'])}`,
   },
   {
-    id: 'P7-02', milestone: 'P7', labels: ['phase:7', 'security', 'decision-needed'],
+    id: 'P7-02', milestone: 'P7', labels: ['phase:7', 'security'],
     title: 'Retention policy engine, deletion jobs and legal holds',
-    body: `**Escalation**: D6.
+    body: `**Decided (D6, 20 October 2026)**: AuraNoteTaker deletes its clinical content (transcripts, nurse notes, drafts, findings and its copy of approved notes) after three months; the record stays in Dentally. Audio is not stored. Audit events (no clinical content) follow their own period.
 
-${ac(['RetentionPolicy configurable per data class', 'Scheduled deletion with its own audit record', 'Legal hold suspends deletion'])}`,
+${ac(['RetentionPolicy configurable per data class, defaulting to three months for clinical content', 'Scheduled deletion with its own audit record', 'Legal hold suspends deletion', 'Deletion is built and tested before the first real transcript is stored (Phase 2 pilot), not left to Phase 7'])}`,
   },
   {
     id: 'P7-03', milestone: 'P7', labels: ['phase:7', 'security'],

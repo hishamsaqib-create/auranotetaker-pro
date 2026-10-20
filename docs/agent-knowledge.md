@@ -32,7 +32,7 @@ Never Agent Knowledge: anything that states a clinical fact about a patient, any
 
 - **Aura's clinical note template library** (April 2026): 97 templates in 14 categories, Dentally native format, Palmer notation, local anaesthetic fields on every clinical template, Halo Veneers labelled as porcelain veneers made by Halo Dental Lab, brand-generic clear aligner templates. These become the first `Template` versions, mapped to the spec's 21 note types, after clinician review.
 - A UK dental vocabulary list (materials, local anaesthetics, implant components, laboratory terms) for speech-to-text hints and validation.
-- Notation rules for the clinic's notation (Palmer for Aura, pending D5), including spoken forms ("upper right six", "UR6", "one six").
+- Notation rules for Aura's notation: quadrant and number, for example UR1 (D5), with spoken forms ("upper right one") accepted and tooth numbers such as 11 or 8 flagged for checking.
 
 ## 4. Learning loop
 

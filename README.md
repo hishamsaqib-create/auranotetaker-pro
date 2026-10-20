@@ -4,7 +4,7 @@ An ambient AI dental scribe and clinical-record audit tool for Aura Dental Clini
 
 With the patient's permission it transcribes the appointment, combines the transcript with the nurse's notes, drafts a structured dental record for the clinician to review and approve, and keeps a complete audit trail. It never diagnoses, never decides on its own which patient is in the chair, and never writes to the clinical record without the treating clinician's approval.
 
-**Status:** Phase 1 (foundations, diary and patient confirmation) in progress. The prediction engine, patient lock, audit builder, read-only Dentally client, server handlers and main clinical screen are built and tested against fictional data. Nothing is connected to a live Base44 app or to Dentally yet; see [decisions needed](docs/roadmap.md#decisions-needed).
+**Status:** Phase 1 (foundations, diary and patient confirmation) in progress. The prediction engine, patient lock, audit builder, read-only Dentally client, server handlers and main clinical screen are built and tested against fictional data. Nothing is connected to a live Base44 app or to Dentally yet; see [decisions](docs/roadmap.md#decisions).
 
 ## Try it
 

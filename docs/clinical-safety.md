@@ -124,7 +124,7 @@ Findings use "possible" language, show their evidence, and default to UNREVIEWED
 
 ## 11. Governance
 
-- **CSO:** a registered clinician with clinical safety training, ideally not the system's main developer or sponsor. **D4** asks who.
+- **CSO:** Jennifer Ingledew (D4, 20 October 2026). DCB0160 asks that the CSO holds current UK professional registration (GDC for a dental practice), has clinical experience in the setting and has clinical risk management training for health IT. If Jennifer is not GDC-registered, she leads the DPIA and the safety work, and a registered clinician signs off as CSO.
 - **Change control:** changes to `lib/core`, `lib/server`, `base44/`, prompts, models, templates or Agent Knowledge rules carry a safety impact note in the pull request and need CSO review when clinical behaviour changes.
 - **Incident reporting:** clinical safety incidents and near misses (including wrong-patient selections caught before approval) are logged and reviewed monthly.
 - **Monitoring:** wrong-patient near misses (alternative chosen over a HIGH suggestion, reassignments), unresolved findings at approval, time to approve, edit rates, transcription gap minutes, exports not confirmed as entered within 24 hours.

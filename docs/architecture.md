@@ -1,7 +1,7 @@
 # AuraNoteTaker Pro: Architecture
 
 Status: draft v0.1, 20 October 2026. Owner: Dr Hisham Saqib.
-Items marked **DECISION NEEDED** are escalations. They are collected, with recommendations, in [roadmap.md](roadmap.md#decisions-needed).
+Items marked **DECISION NEEDED** are escalations. They are collected, with recommendations and the decisions made so far, in [roadmap.md](roadmap.md#decisions).
 
 ---
 
@@ -20,7 +20,7 @@ It is deliberately an administrative documentation tool. It never diagnoses, nev
 | Dentally | Public v1 REST API (`api.dentally.co`, sandbox `api.sandbox.dentally.co`). Appointments, patients, practitioners and related resources are readable. No public endpoint reads or writes clinical notes. Dentally lists Notes, Audit and Patient documents as unavailable through the API, with no timeline. The NexGen (v2) API is an early preview covering Sites and Patients only. | Phase 1 is fully supported. Phase 4 write-back and Phase 6 historical audit are blocked on Dentally. See [dentally-integration.md](dentally-integration.md). |
 | Google Drive | Connector works. No existing AuraNoteTaker folders. | Phase 5 can create the controlled folder structure, for non-patient content only. |
 | Secrets in the build environment | None for Dentally, Base44, speech-to-text or LLM providers. Only build-infrastructure tokens. | Phase 1 code is built and tested against a mock Dentally service and fictional demo data. Nothing has touched production data. |
-| Existing clinical standards | Aura's clinical note template library: 97 templates in 14 categories, Dentally native format, **Palmer notation**, local anaesthetic fields on every clinical template (April 2026). | These templates seed Phase 3. Tooth notation becomes a clinic setting, because the spec says FDI and Aura's standard is Palmer. **DECISION NEEDED** (D5). |
+| Existing clinical standards | Aura's clinical note template library: 97 templates in 14 categories, Dentally native format, **Palmer notation**, local anaesthetic fields on every clinical template (April 2026). | These templates seed Phase 3. Tooth notation becomes a clinic setting. **Decided** (D5): Aura writes quadrant and number, for example UR1. |
 
 ## 3. System overview
 
@@ -109,7 +109,7 @@ The prompt version, model ID, template version and Agent Knowledge version are p
 
 ### 4.7 Audit module (Phase 6)
 
-Batch runs over clinical notes produce advisory findings with a reviewer workflow and a per-clinician dashboard. The data source is **DECISION NEEDED** because Dentally does not expose clinical notes through its API.
+Batch runs over clinical notes produce advisory findings with a reviewer workflow and a per-clinician dashboard. The data source is **DECISION NEEDED** because Dentally does not expose clinical notes through its API, and AuraNoteTaker keeps its own copies for only three months (D6).
 
 ### 4.8 Agent Knowledge (Phase 5)
 
@@ -236,7 +236,16 @@ Design response:
 8. A recording that runs past its appointment into the next patient's slot raises a prominent warning. It never switches patient automatically.
 9. Every confirmation records what was chosen, what the screen predicted and what the server predicted, so near misses are measurable.
 
-## 8. Hosting and data residency: DECISION NEEDED (D2)
+## 8. Hosting and data residency (D2)
+
+**Decision (20 October 2026):** Base44's standard plan, not Enterprise, with AuraNoteTaker deleting its clinical content after three months (D6); the record stays in Dentally.
+
+What this means, from Base44's privacy page: servers are in the United States, and on every plan except Enterprise "your data can be used to train AI models", with no opt-out setting. Phase 1 is unaffected in substance: Base44 holds staff profiles, settings, and sessions made of Dentally IDs, appointment times and statuses, with no names, dates of birth or clinical text. Phase 2 is where it matters, because transcripts and nurse notes are the most sensitive data the system handles. That choice is **D2a**:
+
+- **Recommended:** keep transcripts, nurse notes, drafts and findings in AWS London (eu-west-2), next to the AI model that D3 places there anyway, with S3 lifecycle rules deleting them at three months. Base44 keeps identity, roles, settings, sessions and the audit trail. This is option B below with Base44 as the front door.
+- **Alternative:** keep them in Base44 but encrypted with a key Base44 does not store with the data, so what Base44 holds is unreadable. Simpler to host, weaker than not storing it there at all.
+
+The analysis that led to the original recommendation is kept below for the DPIA.
 
 What Base44's documentation says (October 2026):
 
@@ -256,7 +265,7 @@ Sources: [Base44 privacy and security](https://docs.base44.com/Community-and-sup
 | **B. Split** | Identity, roles, configuration and templates in Base44. Transcripts, nurse notes, drafts, approved notes and findings in AWS London (eu-west-2), alongside the LLM | UK storage and processing for all clinical content; one AWS agreement covers storage and AI | Two backends to secure and connect; more engineering |
 | **C. AWS London only** | Everything in AWS eu-west-2 | Strongest control (KMS keys, CloudTrail, S3 Object Lock for audit) | Most engineering and operations; diverges from Aura's Base44 ecosystem |
 
-**Recommendation:** Option A, provided Base44 confirms in writing: UK storage for app data, no AI training on the workspace, the sub-processor list with processing locations, a DPA that covers special category health data, backup retention, and breach notification terms. If any of those cannot be confirmed, Option B. **Not acceptable under any option:** patient data on a non-Enterprise Base44 plan.
+**Original recommendation (before the decision above):** Option A, provided Base44 confirmed in writing UK storage, no AI training on the workspace, the sub-processor list with processing locations, a DPA that covers special category health data, backup retention and breach notification terms; otherwise Option B. It also advised against patient data on a non-Enterprise plan, which is why D2a keeps clinical content out of Base44 in readable form.
 
 Needed by: before any production Dentally data reaches Base44 (the Phase 1 pilot) and before Phase 2 stores the first transcript. Development continues meanwhile on demo data and the Dentally sandbox.
 
@@ -312,7 +321,8 @@ auranotetaker-pro/
 | A7 | Patient declines means no recording and no AI processing for that appointment | Most conservative reading of permission | D7 changes it |
 | A8 | Demo mode is the local default and permanently bannered | Developers never need production data | Never |
 | A9 | Audio not stored server-side by default | Data minimisation; transcript plus nurse notes are the inputs | Failure-recovery testing shows a short buffer is needed (then 24 hours maximum) |
-| A10 | Tooth notation stored canonically, displayed in the clinic's notation | Aura uses Palmer; speech arrives in mixed forms; validation needs one canonical form | D5 |
+| A10 | Tooth notation stored canonically, displayed in the clinic's notation | Aura writes quadrant and number (UR1, D5); speech arrives in mixed forms; validation needs one canonical form | Another clinic uses a different notation |
 | A11 | No realtime push in Phase 1. The diary is polled (every minute while visible, every five while hidden, at once on return). Session state is fetched when the screen loads, when its setup changes and after any conflict; changes made on another screen are caught by version checks, which ask the user to reload | Dentally offers no change feed; polling survives browser throttling; one screen per surgery in Phase 1. Base44 realtime subscriptions are the candidate for session state shared across screens (spec section 16) in Phase 2 | Two screens need to work on one session live (nurse and dentist), or Dentally adds webhooks |
 | A12 | The confirmation audit record is written before the session is created, with a compensating record if creation fails; later changes are audited straight after, with retries, and the user is told if that fails | Base44 has no multi-entity transactions; a session must never exist without its confirmation record | Phase 4 transactional outbox (P4-04) |
 | A13 | Predictions use the server's clock and the clinic's settings | A surgery PC's clock can be wrong; the screen and the server must suggest the same patient | Never |
+| A14 | Base44 standard plan (D2); clinical content deleted after three months (D6) | Hisham's decision on cost and simplicity; Dentally holds the record | D2a, the DPIA, or Base44 changing its terms |

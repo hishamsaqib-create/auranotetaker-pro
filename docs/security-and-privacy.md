@@ -105,14 +105,14 @@ SUPER_ADMIN is a platform role for multi-clinic operation. It has **no access to
 
 ## 7. Retention
 
-Proposed defaults for the DPIA. All are configurable per clinic through `RetentionPolicy`, and enforced by a scheduled deletion job (Phase 7) that records what it deleted.
+**Decided (D6, 20 October 2026):** AuraNoteTaker deletes its clinical content after three months; the record stays in Dentally. The periods are configurable per clinic through `RetentionPolicy` and enforced by a scheduled deletion job that records what it deleted. Deletion must work before the first real transcript is stored (Phase 2 pilot).
 
-| Data | Proposed default | Rationale |
+| Data | Retention | Rationale |
 |---|---|---|
 | Audio | Not stored. If the Phase 2 spike shows a recovery buffer is needed, deleted once transcribed, 24 hours maximum | Transcript and nurse notes are sufficient inputs |
-| Transcript segments, nurse notes | 30 days after the session is approved or discarded | Allows review of recent disputes; the approved note is the record |
-| Generated drafts, safety findings | 30 days after approval or discard | Explains how a note was produced, short term |
-| Approved notes | **D6**: either the clinical records retention period (if AuraNoteTaker's copy is treated as part of the record) or one year after entry in Dentally is confirmed | Dentally holds the legal record |
+| Transcript segments, nurse notes | Three months | Allows review of recent queries; the note in Dentally is the record |
+| Generated drafts, safety findings | Three months | Explains how a note was produced, short term |
+| AuraNoteTaker's copy of approved notes | Three months after entry in Dentally is confirmed | Dentally holds the legal record |
 | Audit events | Aligned with the clinical records retention period | Shows who accessed and changed what |
 | Audit findings | 2 years | Supports trend review without indefinite performance files |
 | Agent Knowledge | While active, plus version history | De-identified, no patient data |

@@ -1,21 +1,22 @@
 # AuraNoteTaker Pro: Roadmap
 
-Status: draft v0.1, 20 October 2026. The backlog is defined in `scripts/github/backlog.mjs` and created in GitHub with `node scripts/github/create-backlog.mjs --repo <owner>/<repo>`. Issue titles carry their IDs (for example `[P1-07]`).
+Status: draft v0.2, 20 October 2026. The backlog is defined in `scripts/github/backlog.mjs` and published as [GitHub issues](https://github.com/hishamsaqib-create/auranotetaker-pro/issues) with `node scripts/github/create-backlog.mjs --repo hishamsaqib-create/auranotetaker-pro` (add `--update` to bring existing issues in line after editing it). Issue titles carry their IDs (for example `[P1-07]`).
 
-## Decisions needed
+## Decisions
 
-These are the escalations the spec reserves for Hisham: clinical safety, patient identity, data loss, security, production credentials and Dentally production writes.
+These are the escalations the spec reserves for Hisham: clinical safety, patient identity, data loss, security, production credentials and Dentally production writes. Decisions made on 20 October 2026 are marked **Decided**.
 
-| # | Decision | Recommendation | Needed by |
+| # | Decision | Recommendation or decision | Needed by |
 |---|---|---|---|
-| **D1** | Dentally offers no API to read or write clinical notes. Ask Dentally for access or a roadmap, and whether an official notes export exists | Ask now. Meanwhile Phase 4 uses "export to Dentally plus entry confirmation" and Phase 6 starts with AuraNoteTaker-approved notes | Phase 4 and 6 |
-| **D2** | Where patient data is stored and processed | Base44 Enterprise with UK residency, if Base44 confirms the conditions in [architecture.md](architecture.md#8-hosting-and-data-residency-decision-needed-d2) in writing; otherwise split with clinical content in AWS London. Never a non-Enterprise Base44 plan | Before any production Dentally data reaches Base44 |
+| **D1** | Dentally offers no API to read or write clinical notes | **Decided:** copy and paste into Dentally is fine. Phase 4 delivers approved notes as a Dentally-ready copy with an "entered in Dentally" confirmation; API write-back (P4-02) is not planned. Historical audit (Phase 6) still needs a source for Dentally-native notes | Phase 4 and 6 |
+| **D2** | Where patient data is stored and processed | **Decided:** Base44 standard plan, not Enterprise. On that plan Base44 stores data in the US, and its terms allow app data to be used to train AI models, with no opt-out. Phase 1 stores only IDs, times and statuses. See D2a | Before any production Dentally data reaches Base44 |
+| **D2a** | Where transcripts, nurse notes and draft notes are stored, given D2 | Recommended: AWS London, alongside the AI model (needed for D3 anyway), deleted automatically at three months, so no readable clinical content sits in Base44. Alternative: encrypted inside Base44 so the stored text is unreadable to it | Phase 2 |
 | **D3** | LLM and speech-to-text providers | LLM: Claude Sonnet 4.6 on Amazon Bedrock pinned to London. STT: bake-off between Speechmatics and AWS Transcribe en-GB | Phase 2 (STT), Phase 3 (LLM) |
-| **D4** | Clinical Safety Officer and DPIA owner | A registered clinician with clinical safety training who is not the main sponsor; a named data protection lead for the DPIA | Now; DPIA signed before Phase 2 pilot |
-| **D5** | Tooth notation in notes | Aura's April 2026 template library standardised on **Palmer**, while the spec says FDI. Output Palmer for Aura, accept both on input, store canonically | Phase 3 |
-| **D6** | Retention periods | Audio not stored; transcripts, nurse notes, drafts and findings 30 days after approval; approved note copy per the decision in [security-and-privacy.md](security-and-privacy.md#7-retention) | Phase 2 (transcripts), Phase 4 (approved notes) |
+| **D4** | Clinical Safety Officer and DPIA owner | **Decided:** Jennifer Ingledew. DCB0160 asks that the CSO holds current UK professional registration (GDC for a dental practice), has clinical experience in the setting and has health IT clinical risk management training. If Jennifer is not GDC-registered, she leads the DPIA and the safety work and a registered clinician signs off as CSO | Now; DPIA signed before Phase 2 pilot |
+| **D5** | Tooth notation in notes | **Decided:** quadrant and number, for example UR1 (upper right central incisor), never tooth numbers such as 8 or 11. Spoken "upper right one" and written UR1 are accepted; FDI and US numbers are flagged for checking | Phase 3 |
+| **D6** | Retention periods | **Decided:** AuraNoteTaker deletes its clinical content after three months; the record stays in Dentally. Audio is not stored. Audit events (no clinical content) follow their own period, still to be set | Phase 2 (transcripts), Phase 4 (approved notes) |
 | **D7** | What "patient declines" means | No recording and no AI processing of any of that appointment's data | Phase 2 |
-| **D8** | Dentally credentials | A dedicated, read-only credential for AuraNoteTaker plus sandbox access, rather than reusing AuraMail's | Phase 1 integration |
+| **D8** | Dentally credentials | **Decided:** a separate read-only key for the AuraNoteTaker app (not AuraMail's), sandbox first. Entered by Hisham straight into the Base44 app's secrets, never sent in chat | Phase 1 integration |
 | **D9** | Identity confirmation while Dentally is down | Not allowed in v1: active sessions continue, new sessions wait for Dentally | Phase 4 |
 | **D10** | Who sees clinician audit dashboards | Each clinician sees their own; clinical lead and auditor see all; no league tables; clinicians informed before launch | Phase 6 |
 
@@ -23,7 +24,7 @@ These are the escalations the spec reserves for Hisham: clinical safety, patient
 
 | # | Blocker | Effect | Unblocked by |
 |---|---|---|---|
-| B1 | Build session cannot create GitHub repositories | Code and backlog are local only | Hisham creates `auranotetaker-pro` and it is attached |
+| B1 | ~~Build session cannot create GitHub repositories~~ | Resolved 20 October 2026: Hisham created the repository; code pushed and backlog published | Done |
 | B2 | No Base44 app or credentials for AuraNoteTaker | Functions and entities written but not deployed | P1-01 after D2 |
 | B3 | No Dentally credentials in the build environment | Built against a mock; field mapping unverified | P1-02, P1-03 (D8) |
 | B4 | Dentally has no clinical notes endpoints | No automatic write-back; no historical audit of Dentally-native notes | D1 |
@@ -69,8 +70,8 @@ Flags: safety = safety-critical; decision = needs a decision above; blocked = ex
 
 | ID | Issue | Flags |
 |---|---|---|
-| P1-01 | Create Base44 staging and production apps and link the repository | decision, blocked |
-| P1-02 | Dedicated read-only Dentally credential and sandbox access | decision, blocked |
+| P1-01 | Create Base44 staging and production apps and link the repository | blocked |
+| P1-02 | Dedicated read-only Dentally credential and sandbox access | blocked |
 | P1-03 | Verify Dentally v1 field mapping against the sandbox |  |
 | P1-04 | Authentication via Base44 single sign-on with StaffProfile roles and clinic membership | safety |
 | P1-05 | Admin configuration: clinic, staff roles, clinician mapping, surgeries |  |
@@ -81,7 +82,7 @@ Flags: safety = safety-critical; decision = needs a decision above; blocked = ex
 | P1-10 | Diary refresh, Dentally status and stale/offline handling |  |
 | P1-11 | Append-only AuditEvent and access logging | safety, started |
 | P1-12 | CI: typecheck, tests, build, shared-code sync check, secret scan | started |
-| P1-13 | Appoint a Clinical Safety Officer; adopt intended purpose and hazard log v0.1 | safety, decision |
+| P1-13 | Appoint a Clinical Safety Officer; adopt intended purpose and hazard log v0.1 | safety |
 | P1-14 | Start the DPIA and processor due diligence (Base44, speech-to-text, LLM) | decision |
 | P1-15 | Usability test of patient confirmation with clinicians and nurses | safety |
 
@@ -107,7 +108,7 @@ Flags: safety = safety-critical; decision = needs a decision above; blocked = ex
 | ID | Issue | Flags |
 |---|---|---|
 | P3-01 | Template system and import of Aura's 97-template library |  |
-| P3-02 | Tooth notation module (Palmer and FDI, canonical form, validators) | safety, decision |
+| P3-02 | Tooth notation module (Palmer and FDI, canonical form, validators) | safety |
 | P3-03 | LLM provider abstraction pinned to one region, with prompt versioning | decision |
 | P3-04 | Source-grounded note generation with statement provenance | safety |
 | P3-05 | Independent safety review pass and deterministic validators | safety |
@@ -121,7 +122,7 @@ Flags: safety = safety-critical; decision = needs a decision above; blocked = ex
 | ID | Issue | Flags |
 |---|---|---|
 | P4-01 | Approved-note export to Dentally with entry confirmation | safety |
-| P4-02 | Dentally clinical note write-back via API | safety, decision, blocked |
+| P4-02 | Dentally clinical note write-back via API | safety, blocked |
 | P4-03 | Idempotency and duplicate submission protection | safety |
 | P4-04 | Complete audit trail, transactional audit outbox and audit viewer |  |
 | P4-05 | Failure recovery end-to-end: Dentally, Base44 and speech-to-text outages | safety |
@@ -153,7 +154,7 @@ Flags: safety = safety-critical; decision = needs a decision above; blocked = ex
 | ID | Issue | Flags |
 |---|---|---|
 | P7-01 | Security review and penetration test |  |
-| P7-02 | Retention policy engine, deletion jobs and legal holds | decision |
+| P7-02 | Retention policy engine, deletion jobs and legal holds |  |
 | P7-03 | Tamper-evident audit log (hash chain) |  |
 | P7-04 | Inactivity lock and session security on shared surgery PCs |  |
 | P7-05 | Cross-tenant isolation tests and multi-clinic onboarding |  |

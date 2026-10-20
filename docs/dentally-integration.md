@@ -16,7 +16,7 @@ Status: draft v0.1, 20 October 2026. Based on Dentally's public documentation an
 
 Dentally's community team confirmed in April 2025 that Notes, Audit, Patient documents and several other areas are not available through the API, logged the requests as feature requests, and gave no timeline ([Dentally community thread](https://community.dentally.com/integrations-api-47/endpoint-access-audit-notes-tasks-casemixes-autocorrespondence-email-letter-patientchartimage-patientdocument-patitentexemption-periobpr-textmessage-specialists-266)). Dentally staff describe the API as two-way but say write access varies by endpoint ([thread](https://community.dentally.com/integrations-api-47/is-the-dentally-api-2-way-213)). The visible v1 reference documents no notes resource ([developer.dentally.co](https://developer.dentally.co/)). The NexGen (v2) API is an early preview with Sites and Patients only ([docs.api.dentally.com](https://docs.api.dentally.com/)).
 
-**DECISION NEEDED (D1):** ask Dentally (their API/Synapse team) for clinical notes read and write access, or their roadmap, and whether an official export of clinical notes exists. Until then the designs in sections 6 and 7 apply.
+**Decided (D1, 20 October 2026):** copy and paste into Dentally is fine, so section 6's export with an entry confirmation is the delivery design and API write-back is not planned. Reading Dentally-native notes for historical audit (section 7) remains open.
 
 ## 2. API facts we rely on
 
@@ -81,7 +81,7 @@ The client exposes only GET methods. There is no generic request method, so a wr
 Default design, available without Dentally changes:
 
 1. The clinician approves the note in AuraNoteTaker. The approved note is stored with its hash and approver.
-2. **Export to Dentally**: one click copies the note in the format of Aura's Dentally templates (Palmer notation, section headings) and shows the patient name and Dentally ID beside it as a final identity check.
+2. **Export to Dentally**: one click copies the note in the format of Aura's Dentally templates (UR1-style tooth notation, section headings) and shows the patient name and Dentally ID beside it as a final identity check.
 3. The clinician pastes it into the patient's clinical notes in Dentally and clicks **Entered in Dentally**. The audit trail records export time, confirmation time and who confirmed.
 4. A daily list shows approved notes not yet confirmed as entered, so nothing is left behind.
 
