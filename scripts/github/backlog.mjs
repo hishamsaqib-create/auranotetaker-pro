@@ -241,7 +241,7 @@ ${ac([
   {
     id: 'P1-14', milestone: 'P1', labels: ['phase:1', 'governance', 'security', 'decision-needed'],
     title: 'Start the DPIA and processor due diligence (Base44, speech-to-text, LLM)',
-    body: `**Decided (20 October 2026)**: Jennifer Ingledew leads (D4); Base44 standard plan, so data is stored in the US and Base44's terms allow app data to be used for AI training (D2); clinical content encrypted in Base44 and deleted the next day, with approved notes kept in a controlled clinical history in Aura's Google Workspace (D2a). **Still open**: D3 (speech-to-text and LLM providers) and how long the clinical history is kept (D6).
+    body: `**Decided (20 October 2026)**: Jennifer Ingledew leads (D4); Base44 standard plan, so data is stored in the US and Base44's terms allow app data to be used for AI training (D2); clinical content encrypted in Base44 and deleted the next day, with approved notes kept in a controlled clinical history in Aura's Google Workspace (D2a). **Still open**: D3 (speech-to-text and LLM providers).
 
 ${ac([
   'DPIA drafted covering scribe, generation, audit module and staff monitoring',
@@ -559,7 +559,7 @@ ${ac([
   'History read only for the patient locked to the session; every read and write audited',
   'History shown to the clinician and the generator as dated previous visits, never as today\'s sources; nothing from history can satisfy a required field (hazard H22)',
   'Evaluation harness includes history traps (last visit\'s treatment must not appear as done today)',
-  'Notes older than the agreed retention (D6) deleted automatically',
+  'Notes older than two years (D6) deleted automatically',
   'Covered in the DPIA and the patient privacy notice',
 ])}`,
   },
@@ -637,11 +637,11 @@ ${ac(['Visibility rules decided and implemented', 'Clinicians informed; DPIA cov
     body: `${ac(['Independent penetration test of web app and functions', 'High and critical findings fixed before go-live'])}`,
   },
   {
-    id: 'P7-02', milestone: 'P7', labels: ['phase:7', 'security', 'decision-needed'],
+    id: 'P7-02', milestone: 'P7', labels: ['phase:7', 'security'],
     title: 'Retention policy engine, deletion jobs and legal holds',
-    body: `**Decided (D2a and D6, 20 October 2026)**: Base44 deletes clinical content the day after the session; approved notes last in the clinical history (P4-08); the record stays in Dentally. Audio is not stored. **Open**: the clinical history's retention (proposed two years from each note) and the audit events' period.
+    body: `**Decided (D2a and D6, 20 October 2026)**: Base44 deletes clinical content the day after the session; approved notes stay in the clinical history (P4-08) for two years from each note; the record stays in Dentally. Audio is not stored. **Open**: the audit events' period.
 
-${ac(['RetentionPolicy configurable per data class: next day for clinical content in Base44, the agreed period for the clinical history', 'Scheduled deletion with its own audit record', 'Legal hold suspends deletion', 'Next-day deletion is built and tested before the first real transcript is stored (Phase 2 pilot), not left to Phase 7'])}`,
+${ac(['RetentionPolicy configurable per data class: next day for clinical content in Base44, two years for the clinical history', 'Scheduled deletion with its own audit record', 'Legal hold suspends deletion', 'Next-day deletion is built and tested before the first real transcript is stored (Phase 2 pilot), not left to Phase 7'])}`,
   },
   {
     id: 'P7-03', milestone: 'P7', labels: ['phase:7', 'security'],

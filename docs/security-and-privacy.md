@@ -113,7 +113,7 @@ SUPER_ADMIN is a platform role for multi-clinic operation. It has **no access to
 | Transcript segments, nurse notes | Until the day after the session (Base44, encrypted) | Working material; the approved note is what lasts |
 | Generated drafts, safety findings | Until the day after the session (Base44, encrypted) | The draft-versus-approved lessons are captured, de-identified, at approval |
 | Approved notes in Base44 | Until the day after approval (encrypted) | Copied to the clinical history and entered in Dentally |
-| Clinical history (Google Workspace) | **Open:** proposed two years from each note | Continuity between visits; Dentally holds the full record |
+| Clinical history (Google Workspace) | Two years from each note | Continuity between visits; Dentally holds the full record |
 | Audit events | Aligned with the clinical records retention period | Shows who accessed and changed what |
 | Audit findings | 2 years | Supports trend review without indefinite performance files |
 | Agent Knowledge | While active, plus version history | De-identified, no patient data |

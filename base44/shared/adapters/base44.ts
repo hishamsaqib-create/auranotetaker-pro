@@ -1,7 +1,9 @@
 // Base44 adapters: resolve the caller and build handler dependencies inside a Base44 backend function.
 //
-// NOT YET VERIFIED against a live Base44 app (issue P1-01). Assumptions to confirm when the app exists:
-//   - functions run on Deno and read secrets with Deno.env.get
+// NOT YET VERIFIED against a live Base44 app (issue P1-01). Per Base44's backend-function docs, each
+// function default-exports a request handler, and secrets come from `secrets.get()` in the built-in
+// `base44:runtime` module, read inside the handler (they resolve per request). Entry points pass that
+// reader in, so this file stays testable outside Base44. Assumptions still to confirm:
 //   - createClientFromRequest(req).asServiceRole.entities.<Name> bypasses entity access rules (per SDK 0.8 docs)
 //   - filter(query, { limit, cursor }) returns { items, next_cursor, has_more } and supports $in/$gte (SDK 0.8 types)
 //   - updateMany(query, { $set }) applies atomically to the rows matching the query, so filtering on `version`
@@ -48,7 +50,8 @@ export interface Base44Like {
   asServiceRole: { entities: Record<string, EntityApi> };
 }
 
-declare const Deno: { env: { get(name: string): string | undefined } };
+/** Reads a secret for the current request (Base44: `secrets.get` from `base44:runtime`). */
+export type SecretReader = (name: string) => string | undefined;
 
 const APP_VERSION = '0.1.0';
 
@@ -95,8 +98,8 @@ function compact<T>(value: T): T {
   return value;
 }
 
-function secret(name: string): string {
-  const value = Deno.env.get(name);
+function requireSecret(readSecret: SecretReader, name: string): string {
+  const value = readSecret(name);
   if (!value) throw new AppError('INTERNAL', 'AuraNoteTaker is not fully configured. Please tell the practice manager.');
   return value;
 }
@@ -109,8 +112,8 @@ const msToIso = (v: number | null): string | null => (v === null ? null : new Da
 // ---------------------------------------------------------------------------
 // Caller and clinic
 
-export async function resolveClinic(base44: Base44Like): Promise<ClinicConfig> {
-  const clinicKey = secret('CLINIC_KEY');
+export async function resolveClinic(base44: Base44Like, readSecret: SecretReader): Promise<ClinicConfig> {
+  const clinicKey = requireSecret(readSecret, 'CLINIC_KEY');
   const clinic = rows(await base44.asServiceRole.entities.Clinic!.filter({ slug: clinicKey, status: 'ACTIVE' }, { limit: 1 }))[0];
   if (!clinic?.id) throw new AppError('INTERNAL', 'Clinic is not configured.');
   const settings = (clinic.settings ?? {}) as Record<string, unknown>;
@@ -392,11 +395,11 @@ export class Base44ClinicDirectory implements ClinicDirectory {
 // ---------------------------------------------------------------------------
 // Wiring
 
-export async function buildDeps(base44: Base44Like, clinic: ClinicConfig): Promise<HandlerDeps> {
+export async function buildDeps(base44: Base44Like, clinic: ClinicConfig, readSecret: SecretReader): Promise<HandlerDeps> {
   const client = new DentallyClient({
-    baseUrl: secret('DENTALLY_BASE_URL'),
-    token: secret('DENTALLY_API_TOKEN'),
-    userAgent: secret('DENTALLY_USER_AGENT'),
+    baseUrl: requireSecret(readSecret, 'DENTALLY_BASE_URL'),
+    token: requireSecret(readSecret, 'DENTALLY_API_TOKEN'),
+    userAgent: requireSecret(readSecret, 'DENTALLY_USER_AGENT'),
   });
   return {
     clock: () => Date.now(),
@@ -429,14 +432,15 @@ export async function runHandler<I, O>(
   req: Request,
   createClient: (req: Request) => Base44Like,
   handler: (ctx: StaffContext, deps: HandlerDeps, input: I) => Promise<O>,
+  readSecret: SecretReader,
 ): Promise<Response> {
   try {
     if (req.method !== 'POST') return jsonResponse({ error: { code: 'VALIDATION', message: 'POST only', details: {} } }, 405);
     const base44 = createClient(req);
-    const clinic = await resolveClinic(base44);
+    const clinic = await resolveClinic(base44, readSecret);
     const ctx = await resolveContext(base44, clinic, req.headers);
     const input = (await req.json().catch(() => ({}))) as I;
-    const deps = await buildDeps(base44, clinic);
+    const deps = await buildDeps(base44, clinic, readSecret);
     return jsonResponse(await handler(ctx, deps, input));
   } catch (err) {
     return errorResponse(err);

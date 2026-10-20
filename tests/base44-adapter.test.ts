@@ -2,7 +2,7 @@
 // They import the generated copy in base44/shared/lib so error classes match the adapter's own.
 import { describe, expect, it } from 'vitest';
 import type { Base44Like } from '../base44/shared/adapters/base44.ts';
-import { Base44AuditSink, Base44ClinicDirectory, Base44SessionRepository, resolveContext } from '../base44/shared/adapters/base44.ts';
+import { Base44AuditSink, Base44ClinicDirectory, Base44SessionRepository, resolveClinic, resolveContext } from '../base44/shared/adapters/base44.ts';
 import { createSession, transition } from '../base44/shared/lib/core/session.ts';
 import type { ScribeSession } from '../base44/shared/lib/core/session.ts';
 import { AppError } from '../base44/shared/lib/server/errors.ts';
@@ -212,6 +212,15 @@ describe('Base44 caller and directory', () => {
   it('refuses a signed-in user with no active profile in this clinic', async () => {
     const base44 = fakeBase44({ StaffProfile: new FakeEntity() }, { email: 'stranger@example.test' });
     await expect(resolveContext(base44, clinic, new Headers())).rejects.toMatchObject({ code: 'FORBIDDEN' });
+  });
+
+  it('finds the clinic named by the CLINIC_KEY secret, and refuses to run without it', async () => {
+    const clinics = new FakeEntity();
+    await clinics.create({ slug: 'aura', status: 'ACTIVE', name: 'Aura Dental Clinic', time_zone: 'Europe/London', settings: { early_start_minutes: 5 } });
+    const base44 = fakeBase44({ Clinic: clinics });
+    const found = await resolveClinic(base44, (name) => (name === 'CLINIC_KEY' ? 'aura' : undefined));
+    expect(found).toMatchObject({ name: 'Aura Dental Clinic', settings: { earlyStartMinutes: 5, overrunMinutes: 30 } });
+    await expect(resolveClinic(base44, () => undefined)).rejects.toMatchObject({ code: 'INTERNAL' });
   });
 
   it('refuses a clinician row with no practitioner ID rather than showing "undefined"', async () => {

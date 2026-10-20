@@ -52,6 +52,9 @@ describe('Base44 functions', () => {
     const entry = join(functionsDir, name, 'entry.ts');
     expect(existsSync(entry)).toBe(true);
     expect(typeof (handlers as Record<string, unknown>)[name]).toBe('function');
-    expect(readFileSync(entry, 'utf8')).toContain(`runHandler(req, (r) => createClientFromRequest(r) as any, ${name})`);
+    const source = readFileSync(entry, 'utf8');
+    expect(source).toContain('export default function (req: Request)');
+    expect(source).toContain(`runHandler(req, (r) => createClientFromRequest(r) as any, ${name}, (name) => secrets.get(name))`);
+    expect(source).toContain("import { secrets } from 'base44:runtime';");
   });
 });

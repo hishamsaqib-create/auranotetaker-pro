@@ -1,9 +1,12 @@
 // Base44 backend function: getDentallyStatus
 // Thin entry point. All logic and checks live in shared/lib/server/handlers.ts (tested in lib/server).
-// Runtime assumption (Deno, npm: specifier) to be confirmed when the Base44 app is linked (issue P1-01).
+// Shape per Base44's backend-function docs: a default-exported request handler; secrets read per request.
 import { createClientFromRequest } from 'npm:@base44/sdk@0.8.54';
+import { secrets } from 'base44:runtime';
 import { getDentallyStatus } from '../../shared/lib/server/handlers.ts';
 import { runHandler } from '../../shared/adapters/base44.ts';
 
-// deno-lint-ignore no-explicit-any
-Deno.serve((req: Request) => runHandler(req, (r) => createClientFromRequest(r) as any, getDentallyStatus));
+export default function (req: Request): Promise<Response> {
+  // deno-lint-ignore no-explicit-any
+  return runHandler(req, (r) => createClientFromRequest(r) as any, getDentallyStatus, (name) => secrets.get(name));
+}

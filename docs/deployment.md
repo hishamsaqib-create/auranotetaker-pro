@@ -39,17 +39,21 @@ Demo mode shows a permanent banner and lets you switch scenarios (normal day, do
    npx base44 auth social-login microsoft enable   # or google, per Aura's identity provider
    npx base44 auth password-login disable
    ```
-3. Verify the function runtime and Dentally auth header by pulling one of AuraMail's sync functions (read-only):
+3. Confirm the Dentally auth header by comparing with one of AuraMail's sync functions (read-only):
    ```bash
    npx base44 functions pull <aura-mail-sync-function>   # run inside a scratch copy linked to AuraMail
    ```
-   Adjust `base44/shared/adapters/base44.ts` if the runtime or SDK import differs from the current assumption (Deno, `npm:@base44/sdk`).
-4. Secrets (names only; values entered by Hisham or the developer, never committed):
+   Function entry points follow Base44's documented shape: a default-exported request handler, the SDK from `npm:@base44/sdk`, and secrets from `secrets.get()` in `base44:runtime`, read inside the handler.
+4. Secrets: entered by Hisham in the app's **Secrets** settings in Base44, or with the CLI. Values never go in chat, the repository, issues or logs.
+   | Secret | Value |
+   |---|---|
+   | `DENTALLY_API_TOKEN` | The app's own read-only Dentally key (D8) |
+   | `DENTALLY_BASE_URL` | `https://api.sandbox.dentally.co` for a sandbox key, `https://api.dentally.co` for a live key |
+   | `DENTALLY_USER_AGENT` | `AuraNoteTaker/0.1` |
+   | `CLINIC_KEY` | `aura` |
    ```bash
-   npx base44 secrets set DENTALLY_BASE_URL=https://api.sandbox.dentally.co
-   npx base44 secrets set DENTALLY_USER_AGENT="AuraNoteTaker/0.1"
-   npx base44 secrets set DENTALLY_API_TOKEN=...      # sandbox in staging, production only in prod
-   npx base44 secrets set CLINIC_KEY=aura
+   npx base44 secrets set DENTALLY_USER_AGENT="AuraNoteTaker/0.1" CLINIC_KEY=aura
+   npx base44 secrets list
    ```
 5. Frontend build settings. Create `.env.production.local` (git-ignored; these values are not secret):
    ```bash
