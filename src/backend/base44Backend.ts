@@ -1,7 +1,7 @@
 // Connected backend: Base44 authentication and backend functions.
 // Not yet exercised against a live Base44 app (issue P1-01).
 
-import { createClient } from '@base44/sdk';
+import { createClient, getAccessToken } from '@base44/sdk';
 import type { AppBackend, CurrentUser } from './types.ts';
 import { BackendError } from './types.ts';
 
@@ -30,6 +30,14 @@ export function createBase44Backend(cfg: { appId: string; serverUrl?: string }):
     analytics: { enabled: false },
   });
   const device = deviceId();
+  const serverUrl = (cfg.serverUrl ?? 'https://base44.app').replace(/\/$/, '');
+
+  function authHeaders(): Record<string, string> {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json', 'X-App-Id': cfg.appId, 'X-Device-Id': device };
+    const token = getAccessToken();
+    if (token) headers.Authorization = `Bearer ${token}`;
+    return headers;
+  }
 
   async function call<T>(name: string, data: Record<string, unknown> = {}): Promise<T> {
     let res: Response;
@@ -44,9 +52,11 @@ export function createBase44Backend(cfg: { appId: string; serverUrl?: string }):
     });
     try {
       res = await Promise.race([
-        base44.functions.fetch(`/${name}`, {
+        // The SDK's functions.fetch posts to /api/functions/<name> without the app ID, which Base44 answers
+        // with 404. Use the same route as functions.invoke, which carries the app ID in the path.
+        fetch(`${serverUrl}/api/apps/${encodeURIComponent(cfg.appId)}/functions/${name}`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-Device-Id': device },
+          headers: authHeaders(),
           body: JSON.stringify(data),
           signal: controller.signal,
         }),
