@@ -7,7 +7,7 @@
     "session_id": { "type": "string", "format": "uuid" },
     "clinic_id": { "type": "string" },
     "clinician_id": { "type": "string" },
-    "surgery_id": { "type": "string" },
+    "surgery_id": { "type": "string", "description": "The surgery the confirming computer is in. Every session belongs to one." },
     "status": {
       "type": "string",
       "enum": ["PATIENT_CONFIRMED", "CONSENT_DECLINED", "READY", "RECORDING", "PAUSED", "STOPPED", "GENERATING", "IN_REVIEW", "APPROVED", "DISCARDED", "CANCELLED"]
@@ -76,6 +76,6 @@
     "client_device_id": { "type": "string", "maxLength": 64 },
     "version": { "type": "integer", "minimum": 1 }
   },
-  "required": ["session_id", "clinic_id", "clinician_id", "status", "dentally_patient_id", "dentally_appointment_id", "appointment", "confirmation", "consent", "version"],
+  "required": ["session_id", "clinic_id", "clinician_id", "surgery_id", "status", "dentally_patient_id", "dentally_appointment_id", "appointment", "confirmation", "consent", "version"],
   "rls": { "create": false, "read": false, "update": false, "delete": false }
 }

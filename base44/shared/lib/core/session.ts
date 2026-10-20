@@ -32,6 +32,11 @@ export function isTerminal(status: SessionStatus): boolean {
   return TERMINAL.has(status);
 }
 
+/** Whether a session in this status can still be cancelled (only before anything has been recorded). */
+export function canCancel(status: SessionStatus): boolean {
+  return status === 'PATIENT_CONFIRMED' || status === 'READY';
+}
+
 /**
  * How the patient was confirmed, kept so near misses can be measured:
  * accepted the single suggestion; picked a different appointment than suggested; picked one of

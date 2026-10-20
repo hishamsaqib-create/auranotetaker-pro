@@ -28,6 +28,11 @@ const DIARY_REASONS = ['INITIAL', 'REFRESH', 'MANUAL'] as const;
 export const DIARY_AUDIT_WINDOW_MS = 15 * 60_000;
 /** Statuses in which nothing has been recorded yet, so an abandoned session can be closed safely. */
 const NOTHING_RECORDED = new Set<ScribeSession['status']>(['PATIENT_CONFIRMED', 'READY']);
+/**
+ * A session with nothing recorded is treated as abandoned this long after its appointment should have
+ * ended. The end counts from confirmation for a patient taken in late, so a late start is not cut short.
+ */
+export const ABANDONED_AFTER_MS = 60 * 60_000;
 const SYSTEM_ACTOR = { email: 'system', roles: ['SYSTEM'] };
 
 // ---------------------------------------------------------------------------
@@ -239,13 +244,20 @@ async function loadSession(ctx: StaffContext, deps: HandlerDeps, sessionId: stri
   return session;
 }
 
+function abandonedAtMs(s: ScribeSession): number {
+  const a = s.patient.appointment;
+  return Math.max(a.finishMs, s.confirmation.confirmedAtMs + (a.finishMs - a.startMs)) + ABANDONED_AFTER_MS;
+}
+
 /**
- * Closes a session left open from an earlier day when nothing was recorded in it. Returns true when
- * the session was closed (so it no longer counts as open). Sessions with recordings are never closed here.
+ * Closes a session in which nothing was recorded once it is clearly abandoned: from an earlier day, or
+ * an hour past the end of its appointment. Returns true when the session was closed (so it no longer
+ * counts as open). Sessions with recordings are never closed here.
  */
 async function expireIfAbandoned(ctx: StaffContext, deps: HandlerDeps, s: ScribeSession): Promise<boolean> {
   const now = deps.clock();
-  if (!NOTHING_RECORDED.has(s.status) || sessionIsToday(s, now, deps.clinic.timeZone)) return false;
+  if (!NOTHING_RECORDED.has(s.status)) return false;
+  if (sessionIsToday(s, now, deps.clinic.timeZone) && now <= abandonedAtMs(s)) return false;
   const r = transition(s, { type: 'EXPIRE', by: SYSTEM_ACTOR.email, atMs: now });
   if (!r.ok) return false;
   try {
@@ -285,6 +297,38 @@ function outcomesFor(sessions: readonly ScribeSession[]): Record<string, ScribeO
     else if (s.status === 'CONSENT_DECLINED' && out[id] !== 'APPROVED') out[id] = 'DECLINED';
   }
   return out;
+}
+
+/**
+ * After a failed save the session may or may not exist (a timeout can hide a save that went through).
+ * The screen was told confirmation failed, so a session that did get saved is withdrawn, and the audit
+ * trail says which case it was. If storage cannot be read, nothing is claimed: a stray session would
+ * show up as an open session, which the screen offers to open or cancel.
+ */
+async function withdrawAfterFailedCreate(
+  ctx: StaffContext,
+  deps: HandlerDeps,
+  session: ScribeSession,
+  ids: { sessionId: string; dentallyPatientId: string; dentallyAppointmentId: string },
+): Promise<void> {
+  try {
+    const stored = await deps.sessions.get(ctx.clinicId, session.sessionId);
+    if (!stored) {
+      await audit(ctx, deps, 'SESSION_CANCELLED', { ...ids, actor: SYSTEM_ACTOR, details: { reasonCode: 'CREATE_FAILED' } });
+      return;
+    }
+    if (isTerminal(stored.status)) return;
+    const r = transition(stored, { type: 'CANCEL', by: SYSTEM_ACTOR.email, atMs: deps.clock() });
+    if (!r.ok) return;
+    await deps.sessions.update(r.session, stored.version);
+    await audit(ctx, deps, 'SESSION_CANCELLED', {
+      ...ids,
+      actor: SYSTEM_ACTOR,
+      details: { statusBefore: stored.status, reasonCode: 'CREATE_UNCONFIRMED' },
+    });
+  } catch {
+    // Storage unreachable: see above.
+  }
 }
 
 async function applySessionEvent(
@@ -409,7 +453,11 @@ export async function confirmPatient(
   const appointmentId = reqId(input.appointmentId, 'appointment');
   const patientId = reqId(input.patientId, 'patient');
   const practitionerId = reqId(input.practitionerId, 'clinician');
-  const surgeryId = optId(input.surgeryId, 'surgery');
+  // Every session belongs to a surgery: the one-session-per-surgery rule and the consent checks depend on it.
+  if (input.surgeryId === undefined || input.surgeryId === null || input.surgeryId === '') {
+    throw new AppError('VALIDATION', 'Choose the surgery this computer is in before confirming a patient.');
+  }
+  const surgeryId = reqId(input.surgeryId, 'surgery');
   const predictedAppointmentId = optId(input.predictedAppointmentId, 'predicted appointment');
   const method = reqEnum(input.method, CONFIRMATION_METHODS, 'confirmation method');
   const acknowledgePreviousDecline = optBool(input.acknowledgePreviousDecline, 'acknowledgement');
@@ -441,7 +489,7 @@ export async function confirmPatient(
   }
 
   // One open session per surgery, per patient and per clinician (no patient crossover).
-  const inSurgery = surgeryId ? (await openSessions(ctx, deps, { surgeryId }))[0] : undefined;
+  const inSurgery = (await openSessions(ctx, deps, { surgeryId }))[0];
   if (inSurgery) {
     throw new AppError('ACTIVE_SESSION_EXISTS', 'A session is already open in this surgery. Finish or cancel it first.', { sessionId: inSurgery.sessionId });
   }
@@ -519,27 +567,31 @@ export async function confirmPatient(
   try {
     await deps.sessions.create(session);
   } catch (err) {
-    await audit(ctx, deps, 'SESSION_CANCELLED', { ...ids, actor: SYSTEM_ACTOR, details: { reasonCode: 'CREATE_FAILED' } }).catch(() => undefined);
+    await withdrawAfterFailedCreate(ctx, deps, session, ids);
     throw err;
   }
 
-  // Two screens can confirm at the same moment. Check again; the earliest confirmation wins and the other is cancelled.
+  // Two screens can confirm at the same moment. Now that this session is stored, look again: if any other
+  // open session conflicts with it, this one is withdrawn. Of two simultaneous confirmations, the one that
+  // looks last always sees the other, so at most one survives. (In an exact tie both are withdrawn and
+  // the user simply confirms again: no session is safer than two.)
   const rivals = [
-    ...(surgeryId ? await deps.sessions.findActive(ctx.clinicId, { surgeryId }) : []),
+    ...(await deps.sessions.findActive(ctx.clinicId, { surgeryId })),
     ...(await deps.sessions.findActive(ctx.clinicId, { patientId })),
     ...(await deps.sessions.findActive(ctx.clinicId, { clinicianId: practitionerId })),
   ].filter((s) => !isTerminal(s.status) && s.sessionId !== session.sessionId);
-  const winner = [session, ...rivals].sort(
-    (a, b) => a.confirmation.confirmedAtMs - b.confirmation.confirmedAtMs || (a.sessionId < b.sessionId ? -1 : 1),
-  )[0]!;
-  if (winner.sessionId !== session.sessionId) {
+  if (rivals.length > 0) {
     await applySessionEvent(deps, session, session.version, { type: 'CANCEL', by: SYSTEM_ACTOR.email, atMs: deps.clock() });
     await auditAfterChange(ctx, deps, 'SESSION_CANCELLED', {
       ...ids,
       actor: SYSTEM_ACTOR,
       details: { statusBefore: session.status, reasonCode: 'CONCURRENT_CONFIRMATION' },
     });
-    throw new AppError('ACTIVE_SESSION_EXISTS', 'Another screen opened a session at the same moment. Use that session.', { sessionId: winner.sessionId });
+    throw new AppError(
+      'ACTIVE_SESSION_EXISTS',
+      'Another screen confirmed a patient here at the same moment. Check which session is open before confirming again.',
+      { sessionId: rivals[0]!.sessionId },
+    );
   }
 
   return { session, patient };
@@ -561,8 +613,14 @@ export async function recordConsent(
     await audit(ctx, deps, 'ACCESS_DENIED', { sessionId, details: { operation: 'recordConsent', reasonCode: 'NOT_SESSION_MEMBER' } });
     throw new AppError('FORBIDDEN', 'Only the person who confirmed this patient, or the treating clinician, can record the answer.');
   }
-  if (before.surgeryId !== null && surgeryId !== before.surgeryId) {
+  if (before.surgeryId !== surgeryId) {
     throw new AppError('SURGERY_MISMATCH', 'This session belongs to another surgery. Record the answer there, or cancel the session.');
+  }
+  if (await expireIfAbandoned(ctx, deps, before)) {
+    throw new AppError(
+      'SESSION_EXPIRED',
+      'This session was left unused after its appointment ended, so it has been closed. Confirm the patient again if they are in the chair.',
+    );
   }
   if (!sessionIsToday(before, deps.clock(), deps.clinic.timeZone)) {
     throw new AppError('NOT_TODAY', 'This session is from an earlier day. Cancel it and start a new one.');
@@ -621,7 +679,7 @@ export async function getActiveSession(
   if (!session) return { session: null, restriction: null };
   // Mirrors recordConsent's checks, so the screen never offers an action the server will refuse.
   const restriction: SessionRestriction | null =
-    session.surgeryId !== null && session.surgeryId !== surgeryId
+    session.surgeryId !== surgeryId
       ? 'OTHER_SURGERY'
       : !sessionIsToday(session, deps.clock(), deps.clinic.timeZone)
         ? 'PREVIOUS_DAY'

@@ -1,8 +1,10 @@
 import { beforeEach, describe, expect, it } from 'vitest';
+import { isTerminal } from '../core/session.ts';
 import { DEMO_PRACTITIONERS, DEMO_ROOMS, MockDentallyService } from '../dentally/mock.ts';
 import type { DemoScenario } from '../dentally/mock.ts';
 import { AppError } from './errors.ts';
 import {
+  ABANDONED_AFTER_MS,
   cancelSession,
   confirmPatient,
   DIARY_AUDIT_WINDOW_MS,
@@ -213,17 +215,61 @@ describe('confirmPatient', () => {
     await expectAppError(confirmPatient(nurse, d, { ...confirmInput, surgeryId: 'surgery-2' }), 'DUPLICATE_PATIENT_SESSION');
   });
 
-  it('lets only one of two simultaneous confirmations win', async () => {
+  it('leaves at most one open session when two screens confirm at the same moment', async () => {
     const d = deps();
     const results = await Promise.allSettled([
       confirmPatient(nurse, d, confirmInput),
       confirmPatient(otherNurse, d, { ...confirmInput, surgeryId: 'surgery-2' }),
     ]);
-    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
-    const rejected = results.find((r) => r.status === 'rejected') as PromiseRejectedResult;
-    expect(rejected.reason).toBeInstanceOf(AppError);
-    expect(['ACTIVE_SESSION_EXISTS', 'DUPLICATE_PATIENT_SESSION']).toContain(rejected.reason.code);
-    expect(sessions.all().filter((s) => s.status === 'PATIENT_CONFIRMED')).toHaveLength(1);
+    const fulfilled = results.filter((r) => r.status === 'fulfilled');
+    expect(fulfilled.length).toBeLessThanOrEqual(1);
+    for (const r of results) {
+      if (r.status === 'rejected') expect(['ACTIVE_SESSION_EXISTS', 'DUPLICATE_PATIENT_SESSION']).toContain((r.reason as AppError).code);
+    }
+    expect(sessions.all().filter((s) => !isTerminal(s.status))).toHaveLength(fulfilled.length);
+  });
+
+  it('never leaves two sessions when the screen that confirmed first is the slower one to save', async () => {
+    let releaseFirst!: () => void;
+    const firstMaySave = new Promise<void>((resolve) => (releaseFirst = resolve));
+    let creates = 0;
+    const slowFirst: SessionRepository = {
+      create: async (session) => {
+        creates += 1;
+        if (creates === 1) await firstMaySave;
+        return sessions.create(session);
+      },
+      get: (c, id) => sessions.get(c, id),
+      update: (session, v) => sessions.update(session, v),
+      findActive: (c, f) => sessions.findActive(c, f),
+      findByAppointments: (c, a) => sessions.findByAppointments(c, a),
+    };
+    const d = deps('normal', { repo: slowFirst });
+    const first = confirmPatient(nurse, d, confirmInput);
+    while (creates === 0) await new Promise((resolve) => setTimeout(resolve, 0));
+    // The second screen confirms, saves and is told it succeeded while the first is still saving.
+    const second = await confirmPatient(otherNurse, d, { ...confirmInput, surgeryId: 'surgery-2' });
+    releaseFirst();
+    await expectAppError(first, 'ACTIVE_SESSION_EXISTS');
+    expect(sessions.all().filter((s) => !isTerminal(s.status)).map((s) => s.sessionId)).toEqual([second.session.sessionId]);
+    expect(auditSink.events.find((e) => e.details.reasonCode === 'CONCURRENT_CONFIRMATION')?.sessionId).not.toBe(second.session.sessionId);
+  });
+
+  it('withdraws a session whose save reported a failure but went through', async () => {
+    const savedThenFailed: SessionRepository = {
+      create: async (session) => {
+        await sessions.create(session);
+        throw new Error('timed out');
+      },
+      get: (c, id) => sessions.get(c, id),
+      update: (session, v) => sessions.update(session, v),
+      findActive: (c, f) => sessions.findActive(c, f),
+      findByAppointments: (c, a) => sessions.findByAppointments(c, a),
+    };
+    await expect(confirmPatient(nurse, deps('normal', { repo: savedThenFailed }), confirmInput)).rejects.toThrow('timed out');
+    expect(sessions.all().map((s) => s.status)).toEqual(['CANCELLED']);
+    expect(auditSink.events.at(-1)).toMatchObject({ action: 'SESSION_CANCELLED', details: { reasonCode: 'CREATE_UNCONFIRMED' } });
+    await expect(confirmPatient(nurse, deps(), confirmInput)).resolves.toBeTruthy();
   });
 
   it('writes the confirmation to the audit trail before the session exists, and records a failed save', async () => {
@@ -270,6 +316,8 @@ describe('confirmPatient', () => {
     await expectAppError(confirmPatient(nurse, deps(), { ...confirmInput, method: 'GUESSED' }), 'VALIDATION');
     await expectAppError(confirmPatient(nurse, deps(), { ...confirmInput, appointmentId: '../x' }), 'VALIDATION');
     await expectAppError(confirmPatient(nurse, deps(), { ...confirmInput, surgeryId: 'surgery-99' }), 'VALIDATION');
+    // Every session belongs to a surgery.
+    await expectAppError(confirmPatient(nurse, deps(), { ...confirmInput, surgeryId: null }), 'VALIDATION');
   });
 });
 
@@ -318,6 +366,29 @@ describe('session changes', () => {
     expect((await sessions.get(CLINIC, session.sessionId))?.status).toBe('CANCELLED');
     expect(auditSink.events.at(-1)).toMatchObject({ action: 'SESSION_STATUS_CHANGED', actorEmail: 'system', details: { reasonCode: 'EXPIRED', to: 'CANCELLED' } });
     await expect(confirmPatient(nurse, dToday, confirmInput)).resolves.toBeTruthy();
+  });
+
+  it('closes a session left unused an hour after its appointment ended, and refuses an answer on it', async () => {
+    let t = NOW;
+    const d = deps('normal', { clock: () => t });
+    const { session } = await confirmPatient(nurse, d, confirmInput); // 10:25–11:10, confirmed at 10:40
+    t = Date.parse('2026-10-20T11:25:00+01:00') + ABANDONED_AFTER_MS + 60_000;
+    await expectAppError(
+      recordConsent(nurse, d, { sessionId: session.sessionId, given: true, expectedVersion: 1, surgeryId: 'surgery-1' }),
+      'SESSION_EXPIRED',
+    );
+    expect((await sessions.get(CLINIC, session.sessionId))?.status).toBe('CANCELLED');
+    expect((await getActiveSession(nurse, d, { surgeryId: 'surgery-1', practitionerId: 'DEMO-PR1' })).session).toBeNull();
+  });
+
+  it('does not close a late-started patient\'s session before their appointment could have ended', async () => {
+    let t = Date.parse('2026-10-20T12:10:00+01:00'); // taken in long after the 10:25 booking
+    const d = deps('normal', { clock: () => t });
+    const { session } = await confirmPatient(nurse, d, { ...confirmInput, predictedAppointmentId: null, method: 'CHOSE_FROM_DIARY' });
+    t = Date.parse('2026-10-20T13:30:00+01:00'); // 45-minute booking from 12:10 ends 12:55; still inside the hour after
+    expect((await getActiveSession(nurse, d, { surgeryId: 'surgery-1', practitionerId: 'DEMO-PR1' })).session?.sessionId).toBe(session.sessionId);
+    const r = await recordConsent(nurse, d, { sessionId: session.sessionId, given: true, expectedVersion: 1, surgeryId: 'surgery-1' });
+    expect(r.session.status).toBe('READY');
   });
 
   it('rejects changes based on a stale version (two screens editing one session)', async () => {

@@ -96,6 +96,28 @@ describe('predictLikelyPatient', () => {
     );
   });
 
+  it('suggests a patient taken in late, measuring from when they went into surgery rather than the booked finish', () => {
+    const late = appt('09:00', '09:30', { state: 'In surgery', inSurgeryAtMs: at('09:55') });
+    const next = appt('10:45', '11:15');
+    const r = predictLikelyPatient({ nowMs: at('10:05'), practitionerId: DR, appointments: [late, next] });
+    expect(r.status).toBe('LIKELY');
+    expect(r.likely?.appointment.appointmentId).toBe(late.appointmentId);
+    const reasons = explainCandidate(r.likely!, ctx);
+    expect(reasons).toContain('Taken into surgery at 09:55, 55 minutes after the booked start');
+    expect(reasons).toContain('Was due to finish at 09:30 (35 minutes ago) and is not marked completed');
+  });
+
+  it('shows a patient still marked In surgery long after they were due to finish for checking, instead of offering the next patient', () => {
+    const forgotten = appt('09:00', '09:30', { state: 'In surgery' });
+    const next = appt('10:45', '11:15');
+    const r = predictLikelyPatient({ nowMs: at('10:15'), practitionerId: DR, appointments: [forgotten, next] });
+    expect(r.status).toBe('AMBIGUOUS');
+    expect(r.likely).toBeNull();
+    expect(r.choices.map((c) => c.appointment.appointmentId)).toEqual([forgotten.appointmentId]);
+    expect(r.nextAppointment?.appointmentId).toBe(next.appointmentId);
+    expect(explainCandidate(r.choices[0]!, ctx)).toContain('Still marked In surgery 45 minutes after it was due to finish, so the status may be out of date');
+  });
+
   it('ignores an "In surgery" status left on for more than two hours (never updated)', () => {
     const ancient = appt('08:00', '08:30', { state: 'In surgery' });
     const current = appt('10:30', '11:00');

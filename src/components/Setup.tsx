@@ -3,7 +3,7 @@ import type { SetupOptionsResponse } from '../../lib/server/handlers.ts';
 
 export interface DeviceSetup {
   practitionerId: string;
-  surgeryId: string | null;
+  surgeryId: string;
 }
 
 const KEY = 'auranotetaker.device-setup.v1';
@@ -14,9 +14,10 @@ export function loadDeviceSetup(options: SetupOptionsResponse): DeviceSetup | nu
     const raw = localStorage.getItem(KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Partial<DeviceSetup>;
+    // Both must still exist: every session belongs to a surgery, so a computer without one is not set up.
     const clinicianOk = options.clinicians.some((c) => c.practitionerId === parsed.practitionerId);
-    const surgeryOk = parsed.surgeryId == null || options.surgeries.some((s) => s.surgeryId === parsed.surgeryId);
-    return clinicianOk && surgeryOk ? { practitionerId: parsed.practitionerId!, surgeryId: parsed.surgeryId ?? null } : null;
+    const surgeryOk = options.surgeries.some((s) => s.surgeryId === parsed.surgeryId);
+    return clinicianOk && surgeryOk ? { practitionerId: parsed.practitionerId!, surgeryId: parsed.surgeryId! } : null;
   } catch {
     return null;
   }
@@ -87,7 +88,7 @@ export function Setup({
           type="button"
           className="button button-primary"
           disabled={!clinician || !surgery}
-          onClick={() => practitionerId && onSave({ practitionerId, surgeryId })}
+          onClick={() => practitionerId && surgeryId && onSave({ practitionerId, surgeryId })}
         >
           {clinician && surgery ? `Use this computer for ${clinician.displayName} in ${surgery.name}` : 'Choose a clinician and a surgery'}
         </button>

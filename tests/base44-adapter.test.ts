@@ -96,7 +96,7 @@ describe('Base44 session repository', () => {
   it('stores a session without null fields and reads it back unchanged', async () => {
     const entity = new FakeEntity();
     const repo = new Base44SessionRepository(fakeBase44({ ScribeSession: entity }));
-    const s = session({ surgeryId: null });
+    const s = session(); // room, reason, predicted appointment and consent fields are null
     await repo.create(s);
     expect(hasNull(entity.rows[0])).toBe(false);
     expect(await repo.get('clinic-aura', s.sessionId)).toEqual(s);
@@ -133,12 +133,29 @@ describe('Base44 session repository', () => {
   });
 
   it('rejects a malformed session row instead of filling in defaults', async () => {
+    const corruptions: Array<(row: Record<string, unknown>) => void> = [
+      (row) => delete row.dentally_patient_id,
+      (row) => delete (row.appointment as Record<string, unknown>).state_at_confirmation,
+      (row) => ((row.status_history as Record<string, unknown>[])[0]!.status = 'SOMETHING_ELSE'),
+      (row) => (row.reassignments = 'not a list'),
+    ];
+    for (const corrupt of corruptions) {
+      const entity = new FakeEntity();
+      const repo = new Base44SessionRepository(fakeBase44({ ScribeSession: entity }));
+      const s = session();
+      await repo.create(s);
+      corrupt(entity.rows[0]!);
+      await expect(repo.get('clinic-aura', s.sessionId)).rejects.toBeInstanceOf(AppError);
+    }
+  });
+
+  it('accepts a row whose empty lists storage left out', async () => {
     const entity = new FakeEntity();
     const repo = new Base44SessionRepository(fakeBase44({ ScribeSession: entity }));
     const s = session();
     await repo.create(s);
-    delete entity.rows[0]!.dentally_patient_id;
-    await expect(repo.get('clinic-aura', s.sessionId)).rejects.toBeInstanceOf(AppError);
+    delete entity.rows[0]!.reassignments;
+    expect((await repo.get('clinic-aura', s.sessionId))?.reassignments).toEqual([]);
   });
 });
 
@@ -182,6 +199,14 @@ describe('Base44 caller and directory', () => {
     const base44 = fakeBase44({ StaffProfile: profiles }, { email: 'Nurse@Aura.test', app_roles: ['SUPER_ADMIN'] });
     const ctx = await resolveContext(base44, clinic, new Headers({ 'x-device-id': 'device-1' }));
     expect(ctx).toMatchObject({ email: 'nurse@aura.test', roles: ['NURSE'], deviceId: 'device-1', clinicId: 'clinic-aura' });
+  });
+
+  it('ignores a device ID header that is not a plain identifier', async () => {
+    const profiles = new FakeEntity();
+    await profiles.create({ user_email: 'nurse@aura.test', clinic_id: 'clinic-aura', active: true, app_roles: ['NURSE'] });
+    const base44 = fakeBase44({ StaffProfile: profiles }, { email: 'nurse@aura.test' });
+    const ctx = await resolveContext(base44, clinic, new Headers({ 'x-device-id': 'Oliver Bennett 12/03/1986' }));
+    expect(ctx.deviceId).toBeNull();
   });
 
   it('refuses a signed-in user with no active profile in this clinic', async () => {

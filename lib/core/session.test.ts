@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ScribeSession, SessionEvent, SessionPatient } from './session.ts';
-import { createSession, detectSessionOverrun, isTerminal, transition } from './session.ts';
+import { canCancel, createSession, detectSessionOverrun, isTerminal, transition } from './session.ts';
 
 const T0 = Date.parse('2026-10-20T10:30:00+01:00');
 const MIN = 60_000;
@@ -242,5 +242,17 @@ describe('detectSessionOverrun (forgotten stop)', () => {
   it('only applies while recording or paused', () => {
     const stopped = apply(recording, { type: 'STOP' });
     expect(detectSessionOverrun(stopped, T0 + 120 * MIN, next)).toBeNull();
+  });
+});
+
+describe('canCancel', () => {
+  it('agrees with the state machine for every status, so the screen never offers a cancel it would refuse', () => {
+    const statuses: ScribeSession['status'][] = [
+      'PATIENT_CONFIRMED', 'CONSENT_DECLINED', 'READY', 'RECORDING', 'PAUSED', 'STOPPED', 'GENERATING', 'IN_REVIEW', 'APPROVED', 'DISCARDED', 'CANCELLED',
+    ];
+    for (const status of statuses) {
+      const r = transition({ ...newSession(), status }, { type: 'CANCEL', by, atMs: T0 + MIN });
+      expect(canCancel(status), status).toBe(r.ok);
+    }
   });
 });

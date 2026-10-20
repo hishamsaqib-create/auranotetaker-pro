@@ -29,7 +29,7 @@ export interface ConfirmPatientInput {
   appointmentId: string;
   patientId: string;
   practitionerId: string;
-  surgeryId: string | null;
+  surgeryId: string;
   predictedAppointmentId: string | null;
   method: ConfirmationMethod;
   /** Set only after the user confirms the patient has changed their mind about an earlier decline. */
@@ -48,7 +48,7 @@ export interface AppBackend {
   getDiary(practitionerId: string, reason: DiaryReason): Promise<DiaryResponse>;
   getPatientSummary(appointmentId: string): Promise<PatientSummaryResponse>;
   confirmPatient(input: ConfirmPatientInput): Promise<ConfirmPatientResponse>;
-  recordConsent(sessionId: string, given: boolean, expectedVersion: number, surgeryId: string | null): Promise<SessionResponse>;
+  recordConsent(sessionId: string, given: boolean, expectedVersion: number, surgeryId: string): Promise<SessionResponse>;
   cancelSession(sessionId: string, expectedVersion: number): Promise<SessionResponse>;
   getActiveSession(surgeryId: string | null, practitionerId: string): Promise<ActiveSessionResponse>;
   /** Name and date of birth of the patient locked to a session (by the locked patient ID). */

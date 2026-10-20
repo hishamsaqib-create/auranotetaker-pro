@@ -75,6 +75,7 @@ function Workspace({ backend, user, clock, onSignOut }: { backend: AppBackend; u
   const [restriction, setRestriction] = useState<SessionRestriction | null>(null);
   const [sessionPatient, setSessionPatient] = useState<PatientSummary | null>(null);
   const [localOutcomes, setLocalOutcomes] = useState<Readonly<Record<string, ScribeOutcome>>>({});
+  const [sessionCheckError, setSessionCheckError] = useState<string | null>(null);
 
   useEffect(() => {
     backend
@@ -94,7 +95,7 @@ function Workspace({ backend, user, clock, onSignOut }: { backend: AppBackend; u
     [options],
   );
 
-  const diary = useDiary(backend, clinician && !editingSetup ? clinician.practitionerId : null, clock);
+  const diary = useDiary(backend, clinician && surgery && !editingSetup ? clinician.practitionerId : null, clock);
   // SAFETY (hazard H01): predictions and the clock on screen use the server's time, so a computer whose
   // clock is wrong does not suggest the wrong appointment. A clock that is far out is also pointed out.
   const offset = diary.clockOffsetMs ?? 0;
@@ -104,15 +105,18 @@ function Workspace({ backend, user, clock, onSignOut }: { backend: AppBackend; u
 
   // Restore an open session for this surgery or clinician after a page refresh, with its locked patient.
   const reloadSession = useCallback(async () => {
-    if (!clinician) return;
+    if (!clinician || !surgery) return;
     try {
-      const found = await backend.getActiveSession(surgery?.surgeryId ?? null, clinician.practitionerId);
+      const found = await backend.getActiveSession(surgery.surgeryId, clinician.practitionerId);
       const open = found.session && !isTerminal(found.session.status) ? found.session : null;
       setSession(open);
       setRestriction(open ? found.restriction : null);
       setSessionPatient(null);
-    } catch {
-      // Leave the current view as it is; the diary status shows connection problems.
+      setSessionCheckError(null);
+    } catch (err) {
+      // Never silent: an open session may exist that this screen cannot see, or a change was saved
+      // without its audit record. Leave the current view as it is and say so.
+      setSessionCheckError(err instanceof Error ? err.message : 'Could not check for an open session.');
     }
   }, [backend, clinician, surgery?.surgeryId]);
 
@@ -167,7 +171,7 @@ function Workspace({ backend, user, clock, onSignOut }: { backend: AppBackend; u
       </div>
     );
   }
-  if (!clinician || editingSetup) {
+  if (!clinician || !surgery || editingSetup) {
     return (
       <div className="app">
         {header}
@@ -175,7 +179,7 @@ function Workspace({ backend, user, clock, onSignOut }: { backend: AppBackend; u
         <Setup
           options={options}
           initial={setup}
-          onCancel={clinician ? () => setEditingSetup(false) : undefined}
+          onCancel={clinician && surgery ? () => setEditingSetup(false) : undefined}
           onSave={(s) => {
             saveDeviceSetup(s);
             setSetup(s);
@@ -193,6 +197,19 @@ function Workspace({ backend, user, clock, onSignOut }: { backend: AppBackend; u
       {header}
       {banner}
       <main className="main">
+        {sessionCheckError && (
+          <Notice
+            tone="warn"
+            title="Could not check for an open session in this surgery"
+            action={
+              <button type="button" className="button button-secondary" onClick={() => void reloadSession()}>
+                Try again
+              </button>
+            }
+          >
+            {sessionCheckError}
+          </Notice>
+        )}
         {Math.abs(offset) > CLOCK_SKEW_WARNING_MS && (
           <Notice tone="warn" title={`This computer's clock is ${skewMinutes} minutes ${offset > 0 ? 'slow' : 'fast'}`}>
             AuraNoteTaker is using the correct time from its server. Ask whoever looks after the practice's computers to correct this clock.
@@ -200,12 +217,13 @@ function Workspace({ backend, user, clock, onSignOut }: { backend: AppBackend; u
         )}
         {session ? (
           <SessionPanel
-            key={session.sessionId}
+            // Keyed by patient as well: if a session ever comes back with a different patient, the banner starts afresh.
+            key={`${session.sessionId}:${session.patient.dentallyPatientId}`}
             backend={backend}
             session={session}
             restriction={restriction}
             patient={sessionPatient}
-            currentSurgeryId={surgery?.surgeryId ?? null}
+            currentSurgeryId={surgery.surgeryId}
             timeZone={timeZone}
             clinicianName={options.clinicians.find((c) => c.practitionerId === session.clinicianId)?.displayName ?? clinician.displayName}
             surgeryName={options.surgeries.find((x) => x.surgeryId === session.surgeryId)?.name ?? null}

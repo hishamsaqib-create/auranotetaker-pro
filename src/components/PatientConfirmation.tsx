@@ -25,7 +25,8 @@ export interface PatientConfirmationProps {
   now: number;
   timeZone: string;
   clinician: ClinicianEntry;
-  surgery: SurgeryEntry | null;
+  /** The surgery this computer is in. Every session belongs to one. */
+  surgery: SurgeryEntry;
   roomNames: Readonly<Record<string, string>>;
   /** Appointments already finished with in AuraNoteTaker today. They are never suggested again. */
   outcomes: Readonly<Record<string, ScribeOutcome>>;
@@ -63,12 +64,12 @@ export function PatientConfirmation(p: PatientConfirmationProps) {
       predictLikelyPatient({
         nowMs: nowMinute,
         practitionerId: p.clinician.practitionerId,
-        roomId: p.surgery?.roomId ?? null,
+        roomId: p.surgery.roomId,
         appointments: p.diary.appointments,
         excludeAppointmentIds: outcomeKey ? outcomeKey.split('|') : [],
         options: p.diary.predictionOptions,
       }),
-    [nowMinute, p.clinician.practitionerId, p.surgery?.roomId, p.diary.appointments, outcomeKey, p.diary.predictionOptions],
+    [nowMinute, p.clinician.practitionerId, p.surgery.roomId, p.diary.appointments, outcomeKey, p.diary.predictionOptions],
   );
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -77,7 +78,15 @@ export function PatientConfirmation(p: PatientConfirmationProps) {
   const [lastAttempt, setLastAttempt] = useState<Attempt | null>(null);
   const diaryRef = useRef<HTMLOListElement>(null);
 
-  const selected = selectedId ? (p.diary.appointments.find((a) => a.appointmentId === selectedId) ?? null) : null;
+  // Dentally returned two different bookings under these IDs: they are shown in the diary but cannot be chosen.
+  const conflictingKey = prediction.warnings
+    .filter((w) => w.code === 'CONFLICTING_DUPLICATE')
+    .flatMap((w) => w.appointmentIds)
+    .sort()
+    .join('|');
+  const conflictingIds = useMemo(() => new Set(conflictingKey ? conflictingKey.split('|') : []), [conflictingKey]);
+  const selected =
+    selectedId && !conflictingIds.has(selectedId) ? (p.diary.appointments.find((a) => a.appointmentId === selectedId) ?? null) : null;
   useEffect(() => {
     if (selectedId && !selected) setSelectedId(null); // the appointment left the diary on refresh
   }, [selectedId, selected]);
@@ -117,7 +126,7 @@ export function PatientConfirmation(p: PatientConfirmationProps) {
     timeZone: p.timeZone,
     clinicianName: p.clinician.displayName,
     roomNames: p.roomNames,
-    selectedRoomId: p.surgery?.roomId ?? null,
+    selectedRoomId: p.surgery.roomId,
   };
   const warningText = (w: PredictionWarning) => explainWarning(w, { timeZone: p.timeZone, appointments: p.diary.appointments });
   const currentIds = new Set(prediction.candidates.filter((c) => c.tier < 3).map((c) => c.appointment.appointmentId));
@@ -133,7 +142,7 @@ export function PatientConfirmation(p: PatientConfirmationProps) {
         appointmentId: a.appointmentId,
         patientId: a.patientId,
         practitionerId: p.clinician.practitionerId,
-        surgeryId: p.surgery?.surgeryId ?? null,
+        surgeryId: p.surgery.surgeryId,
         predictedAppointmentId: attempt.predicted,
         method: attempt.method,
         ...(acknowledgePreviousDecline ? { acknowledgePreviousDecline: true } : {}),
@@ -327,6 +336,7 @@ export function PatientConfirmation(p: PatientConfirmationProps) {
         roomNames={p.roomNames}
         currentIds={currentIds}
         outcomes={p.outcomes}
+        conflictingIds={conflictingIds}
         selectedId={selectedId}
         onSelect={(a) => setSelectedId(a.appointmentId)}
         loading={p.diary.loading}

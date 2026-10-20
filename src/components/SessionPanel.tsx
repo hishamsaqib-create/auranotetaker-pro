@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { ScribeSession } from '../../lib/core/session.ts';
+import { canCancel } from '../../lib/core/session.ts';
 import { formatCalendarDate, formatTimeRange, zonedDateString } from '../../lib/core/time.ts';
 import type { PatientSummary } from '../../lib/dentally/types.ts';
 import type { SessionRestriction } from '../../lib/server/handlers.ts';
@@ -16,7 +17,7 @@ export interface SessionPanelProps {
   /** The identity the server verified at confirmation, when this screen did the confirming. */
   patient: PatientSummary | null;
   /** The surgery this computer is set up for. */
-  currentSurgeryId: string | null;
+  currentSurgeryId: string;
   timeZone: string;
   clinicianName: string;
   /** The surgery the session was started in. */
@@ -32,7 +33,7 @@ type PatientDisplay = { status: 'ok'; patient: PatientSummary } | { status: 'loa
 const firstName = (name: string) => name.split(' ')[0] ?? name;
 
 /** Errors that mean the screen's view of the session is out of date. */
-const RELOAD_AFTER = new Set(['VERSION_CONFLICT', 'SURGERY_MISMATCH', 'NOT_TODAY', 'FORBIDDEN', 'SESSION_TRANSITION_REFUSED']);
+const RELOAD_AFTER = new Set(['VERSION_CONFLICT', 'SURGERY_MISMATCH', 'NOT_TODAY', 'FORBIDDEN', 'SESSION_TRANSITION_REFUSED', 'SESSION_EXPIRED']);
 
 /**
  * The open session, with its locked patient always on screen.
@@ -158,11 +159,18 @@ export function SessionPanel(p: SessionPanelProps) {
                 : `${s.confirmation.confirmedBy} confirmed this patient. Only they or ${p.clinicianName} can record the patient's answer. If the session is no longer needed, cancel it.`}
             {nothingRecorded ? ' Nothing has been recorded.' : ''}
           </p>
-          <div className="actions">
-            <button type="button" className="button button-secondary" disabled={busy} onClick={cancel}>
-              Cancel this session
-            </button>
-          </div>
+          {canCancel(s.status) ? (
+            <div className="actions">
+              <button type="button" className="button button-secondary" disabled={busy} onClick={cancel}>
+                Cancel this session
+              </button>
+            </div>
+          ) : (
+            <p className="state-lead">
+              This session already has a recording, so it cannot be cancelled here. Continue it where it was started, or ask the practice
+              manager.
+            </p>
+          )}
         </section>
       ) : (
         <>

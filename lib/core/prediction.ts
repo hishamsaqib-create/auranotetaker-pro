@@ -15,9 +15,9 @@ export interface PredictionOptions {
   earlyStartMinutes: number;
   /** An appointment whose scheduled finish passed within this many minutes, and is not completed, counts as overrunning. */
   overrunMinutes: number;
-  /** "In surgery" more than this many minutes after the scheduled finish is treated as possibly out of date. */
+  /** "In surgery" more than this many minutes after the expected finish is treated as possibly out of date. */
   staleInSurgeryMinutes: number;
-  /** "In surgery" more than this many minutes after the scheduled finish is ignored altogether (never updated). */
+  /** "In surgery" more than this many minutes after the expected finish is ignored altogether (never updated). */
   ignoreInSurgeryAfterMinutes: number;
   /** "In surgery" is only believed from this many minutes before the scheduled start (patients taken in early). */
   earlyInSurgeryMinutes: number;
@@ -50,6 +50,7 @@ export type Confidence = 'HIGH' | 'MEDIUM' | 'LOW';
 
 export type SignalCode =
   | 'IN_SURGERY_STATE'
+  | 'TAKEN_IN_LATE'
   | 'WITHIN_SCHEDULED_TIME'
   | 'STARTS_SOON'
   | 'OVERRUNNING'
@@ -61,7 +62,10 @@ export type SignalCode =
 
 export interface Signal {
   code: SignalCode;
-  /** Minutes until start (STARTS_SOON) or past the scheduled finish (OVERRUNNING, STALE_IN_SURGERY). */
+  /**
+   * Minutes until start (STARTS_SOON), past the scheduled finish (OVERRUNNING), past the expected finish
+   * (STALE_IN_SURGERY), or after the booked start that the patient went into surgery (TAKEN_IN_LATE).
+   */
   minutes?: number;
 }
 
@@ -133,6 +137,17 @@ function distanceFromNow(a: DiaryAppointment, now: number): number {
   return 0;
 }
 
+/**
+ * When an appointment that is In surgery should finish. A patient taken in late keeps their booked length,
+ * counted from when Dentally recorded them going in, so a late start is not mistaken for a status left on.
+ * An "in surgery" time before the booked start, after now, or missing changes nothing.
+ */
+function expectedFinishMs(a: DiaryAppointment, now: number): number {
+  const takenIn = a.inSurgeryAtMs;
+  if (a.state !== 'In surgery' || takenIn === null || takenIn <= a.startMs || takenIn > now) return a.finishMs;
+  return Math.max(a.finishMs, takenIn + (a.finishMs - a.startMs));
+}
+
 const sameBooking = (a: DiaryAppointment, b: DiaryAppointment) =>
   a.patientId === b.patientId && a.practitionerId === b.practitionerId && a.startMs === b.startMs && a.finishMs === b.finishMs;
 
@@ -180,8 +195,10 @@ export function predictLikelyPatient(input: PredictionInput): PredictionResult {
     const minutesPastFinish = (now - a.finishMs) / MINUTE_MS;
 
     const inSurgery = a.state === 'In surgery';
-    const ignoredInSurgery = inSurgery && minutesPastFinish > opts.ignoreInSurgeryAfterMinutes;
-    const staleInSurgery = inSurgery && !ignoredInSurgery && minutesPastFinish > opts.staleInSurgeryMinutes;
+    const expectedFinish = expectedFinishMs(a, now);
+    const minutesPastExpected = (now - expectedFinish) / MINUTE_MS;
+    const ignoredInSurgery = inSurgery && minutesPastExpected > opts.ignoreInSurgeryAfterMinutes;
+    const staleInSurgery = inSurgery && !ignoredInSurgery && minutesPastExpected > opts.staleInSurgeryMinutes;
     const plausibleInSurgery = inSurgery && !staleInSurgery && !ignoredInSurgery && minutesToStart <= opts.earlyInSurgeryMinutes;
     const within = a.startMs <= now && now < a.finishMs;
     const startsSoon = now < a.startMs && minutesToStart <= opts.earlyStartMinutes;
@@ -191,6 +208,10 @@ export function predictLikelyPatient(input: PredictionInput): PredictionResult {
     if (plausibleInSurgery) {
       tier = 1;
       signals.push({ code: 'IN_SURGERY_STATE' });
+      if (expectedFinish > a.finishMs && a.inSurgeryAtMs !== null) {
+        const late = Math.round((a.inSurgeryAtMs - a.startMs) / MINUTE_MS);
+        if (late >= 5) signals.push({ code: 'TAKEN_IN_LATE', minutes: late });
+      }
       if (now >= a.finishMs) signals.push({ code: 'OVERRUNNING', minutes: Math.floor(minutesPastFinish) });
     }
     if (within) {
@@ -207,7 +228,7 @@ export function predictLikelyPatient(input: PredictionInput): PredictionResult {
     }
     if (tier === null && staleInSurgery) {
       tier = 3;
-      signals.push({ code: 'STALE_IN_SURGERY', minutes: Math.floor(minutesPastFinish) });
+      signals.push({ code: 'STALE_IN_SURGERY', minutes: Math.floor(minutesPastExpected) });
       addWarning(warnings, 'STALE_IN_SURGERY', [a.appointmentId]);
     }
     if (tier === null) continue;
@@ -261,8 +282,10 @@ export function predictLikelyPatient(input: PredictionInput): PredictionResult {
 
   const first = candidates[0];
   if (!first) return result('NONE', null);
-  // Only weak (stale) candidates: nothing is current. They stay in the list for an explicit choice.
-  if (first.tier === 3) return result('NONE', null);
+  // Only weak candidates: Dentally still shows someone In surgery long after they were due to finish.
+  // Usually the status was never updated, but the patient may still be in the chair, so show them for
+  // checking with no default rather than leading with the next patient.
+  if (first.tier === 3) return result('AMBIGUOUS', null, candidates.filter((c) => c.tier === 3));
 
   const top = candidates.filter((c) => c.tier === first.tier);
   if (top.length > 1) {
@@ -332,6 +355,13 @@ export function explainCandidate(c: Candidate, ctx: ExplainContext): string[] {
       case 'IN_SURGERY_STATE':
         lines.push('Dentally shows this patient as In surgery');
         break;
+      case 'TAKEN_IN_LATE':
+        lines.push(
+          a.inSurgeryAtMs !== null
+            ? `Taken into surgery at ${formatClock(a.inSurgeryAtMs, ctx.timeZone)}, ${plural(s.minutes ?? 0, 'minute')} after the booked start`
+            : `Taken into surgery ${plural(s.minutes ?? 0, 'minute')} after the booked start`,
+        );
+        break;
       case 'WITHIN_SCHEDULED_TIME':
         lines.push('The current time falls inside this appointment');
         break;
@@ -358,7 +388,7 @@ export function explainCandidate(c: Candidate, ctx: ExplainContext): string[] {
         break;
       }
       case 'STALE_IN_SURGERY':
-        lines.push(`Still marked In surgery ${plural(s.minutes ?? 0, 'minute')} after its scheduled finish, so the status may be out of date`);
+        lines.push(`Still marked In surgery ${plural(s.minutes ?? 0, 'minute')} after it was due to finish, so the status may be out of date`);
         break;
       case 'UNKNOWN_STATE':
         lines.push(`Dentally returned an unrecognised status${a.rawState ? ` ("${a.rawState}")` : ''}. Check before confirming`);

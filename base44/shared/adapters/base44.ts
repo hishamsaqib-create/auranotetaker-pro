@@ -6,6 +6,8 @@
 //   - filter(query, { limit, cursor }) returns { items, next_cursor, has_more } and supports $in/$gte (SDK 0.8 types)
 //   - updateMany(query, { $set }) applies atomically to the rows matching the query, so filtering on `version`
 //     gives compare-and-set
+//   - a row is visible to every later filter once create() has returned (the simultaneous-confirmation
+//     check in confirmPatient relies on this)
 //
 // SAFETY: anything unexpected from the database (an unknown response shape, a malformed session row,
 // more rows than can be read) throws. Nothing is assumed or filled in with defaults.
@@ -15,6 +17,7 @@
 
 import type { AuditEvent } from '../lib/core/audit.ts';
 import type { ScribeSession } from '../lib/core/session.ts';
+import { KNOWN_APPOINTMENT_STATES } from '../lib/core/appointments.ts';
 import { isTerminal } from '../lib/core/session.ts';
 import { DentallyClient } from '../lib/dentally/client.ts';
 import { createLiveDentallyService } from '../lib/dentally/service.ts';
@@ -99,6 +102,7 @@ function secret(name: string): string {
 }
 
 const str = (v: unknown): string | null => (typeof v === 'string' && v ? v : null);
+const DEVICE_ID = /^[A-Za-z0-9_-]{1,64}$/;
 const isoToMs = (v: unknown): number | null => (typeof v === 'string' && Number.isFinite(Date.parse(v)) ? Date.parse(v) : null);
 const msToIso = (v: number | null): string | null => (v === null ? null : new Date(v).toISOString());
 
@@ -139,7 +143,8 @@ export async function resolveContext(base44: Base44Like, clinic: ClinicConfig, h
     clinicId: clinic.clinicId,
     roles,
     clinicianId: str(profile.clinician_id),
-    deviceId: str(headers.get('x-device-id'))?.slice(0, 64) ?? null,
+    // A random per-browser ID. Anything else in the header is ignored rather than stored.
+    deviceId: ((v) => (v && DEVICE_ID.test(v) ? v : null))(headers.get('x-device-id')),
     appVersion: APP_VERSION,
   };
 }
@@ -153,6 +158,12 @@ const SESSION_STATUSES = new Set([
 const ACTIVE_STATUSES = ['PATIENT_CONFIRMED', 'READY', 'RECORDING', 'PAUSED', 'STOPPED', 'GENERATING', 'IN_REVIEW'];
 const METHODS = new Set(['CONFIRMED_SUGGESTION', 'CHOSE_ALTERNATIVE', 'RESOLVED_AMBIGUITY', 'CHOSE_FROM_DIARY']);
 const CONSENT = new Set(['PENDING', 'GIVEN', 'DECLINED']);
+const APPOINTMENT_STATES = new Set<string>([...KNOWN_APPOINTMENT_STATES, 'Unknown']);
+
+type Obj = Record<string, unknown>;
+const isObj = (v: unknown): v is Obj => typeof v === 'object' && v !== null && !Array.isArray(v);
+/** Storage may leave out an empty array; anything else that is not an array of objects is malformed. */
+const objArray = (v: unknown): Obj[] | null => (v === undefined ? [] : Array.isArray(v) && v.every(isObj) ? v : null);
 
 function sessionToRow(s: ScribeSession): Record<string, unknown> {
   return compact({
@@ -199,18 +210,29 @@ function sessionToRow(s: ScribeSession): Record<string, unknown> {
 }
 
 function rowToSession(r: Row): ScribeSession {
-  const a = (r.appointment ?? {}) as Record<string, unknown>;
-  const c = (r.confirmation ?? {}) as Record<string, unknown>;
-  const k = (r.consent ?? {}) as Record<string, unknown>;
+  const a = (isObj(r.appointment) ? r.appointment : {}) as Obj;
+  const c = (isObj(r.confirmation) ? r.confirmation : {}) as Obj;
+  const k = (isObj(r.consent) ? r.consent : {}) as Obj;
+  const reassignments = objArray(r.reassignments);
+  const history = objArray(r.status_history);
   // A malformed row is an error, never an active session for an unknown patient.
   const valid =
     str(r.session_id) && str(r.clinic_id) && str(r.clinician_id) && str(r.dentally_patient_id) &&
     typeof r.status === 'string' && SESSION_STATUSES.has(r.status) &&
     str(a.dentally_appointment_id) && str(a.practitioner_id) && isoToMs(a.start_time) !== null && isoToMs(a.finish_time) !== null &&
+    typeof a.state_at_confirmation === 'string' && APPOINTMENT_STATES.has(a.state_at_confirmation) &&
     typeof c.method === 'string' && METHODS.has(c.method) && str(c.confirmed_by_email) && isoToMs(c.confirmed_at) !== null &&
     typeof k.status === 'string' && CONSENT.has(k.status) &&
-    typeof r.version === 'number' && Number.isSafeInteger(r.version) && r.version >= 1;
-  if (!valid) throw new AppError('INTERNAL', UNREADABLE);
+    typeof r.version === 'number' && Number.isSafeInteger(r.version) && r.version >= 1 &&
+    reassignments !== null &&
+    reassignments.every(
+      (x) =>
+        str(x.from_patient_id) && str(x.to_patient_id) && str(x.from_appointment_id) && str(x.to_appointment_id) &&
+        str(x.by_email) && isoToMs(x.at) !== null && typeof x.reason === 'string',
+    ) &&
+    history !== null &&
+    history.every((h) => typeof h.status === 'string' && SESSION_STATUSES.has(h.status) && isoToMs(h.at) !== null && str(h.by_email));
+  if (!valid || reassignments === null || history === null) throw new AppError('INTERNAL', UNREADABLE);
   return {
     sessionId: String(r.session_id),
     clinicId: String(r.clinic_id),
@@ -226,7 +248,7 @@ function rowToSession(r: Row): ScribeSession {
         startMs: isoToMs(a.start_time) ?? 0,
         finishMs: isoToMs(a.finish_time) ?? 0,
         reason: str(a.reason),
-        stateAtConfirmation: (str(a.state_at_confirmation) ?? 'Unknown') as ScribeSession['patient']['appointment']['stateAtConfirmation'],
+        stateAtConfirmation: a.state_at_confirmation as ScribeSession['patient']['appointment']['stateAtConfirmation'],
       },
     },
     confirmation: {
@@ -241,7 +263,7 @@ function rowToSession(r: Row): ScribeSession {
       recordedBy: str(k.recorded_by_email),
       recordedAtMs: isoToMs(k.recorded_at),
     },
-    reassignments: (Array.isArray(r.reassignments) ? r.reassignments : []).map((x: Record<string, unknown>) => ({
+    reassignments: reassignments.map((x) => ({
       fromPatientId: String(x.from_patient_id),
       toPatientId: String(x.to_patient_id),
       fromAppointmentId: String(x.from_appointment_id),
@@ -251,7 +273,7 @@ function rowToSession(r: Row): ScribeSession {
       reason: String(x.reason ?? ''),
       consentCarriedOver: x.consent_carried_over === true,
     })),
-    statusHistory: (Array.isArray(r.status_history) ? r.status_history : []).map((h: Record<string, unknown>) => ({
+    statusHistory: history.map((h) => ({
       status: h.status as ScribeSession['status'],
       atMs: isoToMs(h.at) ?? 0,
       by: String(h.by_email ?? ''),

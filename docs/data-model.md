@@ -130,7 +130,7 @@ Maps a Dentally practitioner. Practitioners exist here even if they never sign i
 | dentally_appointment_id | string | Also kept at the top level so the sessions for an appointment can be found (today's outcomes, earlier declines) |
 | appointment | object | Snapshot: `dentally_appointment_id`, `practitioner_id`, `room_id`, `start_time`, `finish_time`, `reason`, `state_at_confirmation` |
 | clinician_id | string | Dentally practitioner ID of the treating clinician |
-| surgery_id | string, nullable | |
+| surgery_id | string | The surgery the confirming computer is in. Required: one open session per surgery, and consent is only recorded from it |
 | confirmation | object | `method` (`CONFIRMED_SUGGESTION`, `CHOSE_ALTERNATIVE`, `RESOLVED_AMBIGUITY`, `CHOSE_FROM_DIARY`), `predicted_appointment_id`, `matched_prediction`, `confirmed_by_email`, `confirmed_at` |
 | consent | object | `status` (`PENDING`, `GIVEN`, `DECLINED`), `recorded_by_email`, `recorded_at` |
 | reassignments | array of objects | `from_patient_id`, `to_patient_id`, `by_email`, `at`, `reason` |
@@ -200,11 +200,11 @@ Every entity file in `base44/entities/` sets these rules explicitly, because Bas
 ## 6. Key invariants (tested)
 
 - A `ScribeSession`'s `dentally_patient_id` changes only through the `REASSIGN_PATIENT` event, which requires a reason and is refused while recording and after approval. The state machine enforces this today. The function that offers reassignment, and writes the `PATIENT_REASSIGNED` audit event, arrives with P4-06; until then nothing can change a session's patient.
-- At most one non-terminal session per surgery and per clinician, and one per patient. Two simultaneous confirmations leave exactly one session.
+- At most one non-terminal session per surgery and per clinician, and one per patient. Two simultaneous confirmations leave at most one session: one that finds a conflicting open session after saving withdraws itself.
 - A session never exists without its `PATIENT_CONFIRMED` audit event, which is written first.
 - `START_RECORDING` requires consent `GIVEN`. Consent `DECLINED` is terminal, and confirming that appointment again needs an explicit acknowledgement.
 - Consent can be recorded only by the person who confirmed the patient or the treating clinician, from the session's surgery, on the appointment's day.
-- Terminal statuses (`CONSENT_DECLINED`, `CANCELLED`, `APPROVED`, `DISCARDED`) accept no further events. A session from an earlier day with nothing recorded is closed (`CANCELLED`, reason `EXPIRED`) when next found.
+- Terminal statuses (`CONSENT_DECLINED`, `CANCELLED`, `APPROVED`, `DISCARDED`) accept no further events. A session with nothing recorded is closed (`CANCELLED`, reason `EXPIRED`) when next found once it is from an earlier day or an hour past the end of its appointment (counted from confirmation for a late start).
 - Audit `details` contain only allowlisted keys with type-checked values for their action.
 - Session updates require the version that was read, checked in the same write (`updateMany` on id and version), so two browsers cannot silently overwrite each other.
 - A stored row that fails validation is an error, never read with defaults filled in.

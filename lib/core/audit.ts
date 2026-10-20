@@ -130,6 +130,11 @@ export function buildAuditEvent(input: BuildAuditEventInput): AuditEvent {
   if (input.dedupeKey != null && !/^[A-Za-z0-9_:.-]{1,120}$/.test(input.dedupeKey)) {
     throw new AuditDetailsError('dedupeKey must be built from identifiers');
   }
+  // The device ID comes from a request header and the version from the build: both must be plain tokens.
+  if (input.client?.deviceId != null && !ID.test(input.client.deviceId)) throw new AuditDetailsError('client.deviceId must be an identifier');
+  if (input.client?.appVersion != null && !/^[0-9A-Za-z.+-]{1,32}$/.test(input.client.appVersion)) {
+    throw new AuditDetailsError('client.appVersion must be a version string');
+  }
   return {
     clinicId: input.clinicId,
     occurredAtMs: input.occurredAtMs,

@@ -34,7 +34,7 @@ States: `Pending`, `Confirmed`, `Arrived`, `In surgery`, `Completed`, `Cancelled
 
 Fields deliberately **not** used: `notes` (diary notes), `metadata`, `treatment_description`, `patient_image_url`. The diary needs none of them, and data minimisation says not to fetch what we do not need into the scribe path.
 
-List filters used: `on` (date), `practitioner_id`, `room_id`, `site_id`, and `cancelled=false` to leave cancelled appointments out of the list. If one comes back anyway (or an appointment is cancelled between refreshes), it is kept: the diary shows it greyed out so the screen matches Dentally, it can never be suggested or chosen, and the server refuses to confirm it. Completed appointments and unrecognised states are never suggested either, but can be chosen explicitly from the diary (reception sometimes marks an appointment complete while the patient is still in the chair); the state is recorded in the session snapshot.
+List filters used: `on` (date), `practitioner_id`, `room_id`, `site_id`, and `cancelled=false` to leave cancelled appointments out of the list. If one comes back anyway (or an appointment is cancelled between refreshes), it is kept: the diary shows it greyed out so the screen matches Dentally, it can never be suggested or chosen, and the server refuses to confirm it. Completed appointments are never suggested, and an appointment in an unrecognised state is suggested only with lowered confidence and a warning. Both can be chosen explicitly from the diary (reception sometimes marks an appointment complete while the patient is still in the chair); the state is recorded in the session snapshot.
 
 ### Known quirks to verify in the sandbox (issue P1-03)
 

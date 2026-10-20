@@ -12,6 +12,8 @@ export interface DiaryListProps {
   currentIds: ReadonlySet<string>;
   /** Appointments already finished with in AuraNoteTaker today. */
   outcomes: Readonly<Record<string, ScribeOutcome>>;
+  /** Appointment IDs Dentally returned with conflicting details. Shown, but cannot be chosen. */
+  conflictingIds: ReadonlySet<string>;
   selectedId: string | null;
   onSelect: (a: DiaryAppointment) => void;
   loading: boolean;
@@ -21,11 +23,16 @@ export interface DiaryListProps {
   listRef?: Ref<HTMLOListElement>;
 }
 
-function selectable(a: DiaryAppointment): boolean {
-  return a.patientId !== null && a.state !== 'Cancelled' && a.state !== 'Did not attend';
+function canChoose(a: DiaryAppointment, conflicting: ReadonlySet<string>): boolean {
+  return a.patientId !== null && a.state !== 'Cancelled' && a.state !== 'Did not attend' && !conflicting.has(a.appointmentId);
 }
 
+const sameEntry = (a: DiaryAppointment, b: DiaryAppointment) =>
+  a.appointmentId === b.appointmentId && a.patientId === b.patientId && a.startMs === b.startMs && a.finishMs === b.finishMs && a.state === b.state;
+
 export function DiaryList(p: DiaryListProps) {
+  // An exact repeat of an entry is shown once; copies that disagree are all shown, and none can be chosen.
+  const rows = p.appointments.filter((a, i) => p.appointments.findIndex((b) => sameEntry(a, b)) === i);
   return (
     <section className="diary" aria-labelledby="diary-heading">
       <div className="diary-head">
@@ -48,7 +55,7 @@ export function DiaryList(p: DiaryListProps) {
         <p className="diary-empty">No appointments today.</p>
       ) : (
         <ol className="diary-list" ref={p.listRef} tabIndex={-1} aria-label={`Appointments today with ${p.clinicianName}`}>
-          {p.appointments.map((a) => {
+          {rows.map((a, i) => {
             const isCurrent = p.currentIds.has(a.appointmentId);
             const outcome = p.outcomes[a.appointmentId];
             const isSelected = p.selectedId === a.appointmentId;
@@ -62,6 +69,7 @@ export function DiaryList(p: DiaryListProps) {
                 </span>
                 <span className="diary-tags">
                   {isCurrent && <span className="tag tag-now">Now</span>}
+                  {p.conflictingIds.has(a.appointmentId) && <span className="tag tag-warn">Check in Dentally</span>}
                   {outcome === 'DECLINED' && <span className="tag">Scribe declined</span>}
                   {outcome === 'APPROVED' && <span className="tag">Note approved</span>}
                   <span className={`tag tag-state state-${a.state.replace(/\s+/g, '-').toLowerCase()}`}>{a.state}</span>
@@ -69,8 +77,8 @@ export function DiaryList(p: DiaryListProps) {
               </>
             );
             return (
-              <li key={a.appointmentId} className={`diary-row ${isSelected ? 'is-selected' : ''} ${selectable(a) ? '' : 'is-muted'}`}>
-                {selectable(a) ? (
+              <li key={`${a.appointmentId}:${i}`} className={`diary-row ${isSelected ? 'is-selected' : ''} ${canChoose(a, p.conflictingIds) ? '' : 'is-muted'}`}>
+                {canChoose(a, p.conflictingIds) ? (
                   <button type="button" className="diary-button" aria-pressed={isSelected} onClick={() => p.onSelect(a)}>
                     {body}
                   </button>

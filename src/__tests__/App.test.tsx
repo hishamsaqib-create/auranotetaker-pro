@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { DemoScenario } from '../../lib/dentally/mock.ts';
 import { App } from '../App.tsx';
 import { createDemoBackend } from '../backend/demoBackend.ts';
+import { BackendError } from '../backend/types.ts';
 
 // Fixed clock: 10:40 on 20 October 2026. The fictional diary is anchored to it.
 const NOW = Date.parse('2026-10-20T10:40:00+01:00');
@@ -242,6 +243,22 @@ describe('AuraNoteTaker main clinical screen (demo mode)', () => {
     expect(await screen.findByRole('heading', { name: 'Likely current patient' })).toBeInTheDocument();
     expect(screen.getByRole('article', { name: 'Patient Oliver Bennett' })).toBeInTheDocument();
     expect(screen.getByLabelText('Time now 10:40')).toBeInTheDocument();
+  });
+
+  it('says so when it cannot check for an open session, instead of carrying on silently', async () => {
+    localStorage.setItem('auranotetaker.device-setup.v1', JSON.stringify({ practitionerId: 'DEMO-PR1', surgeryId: 'DEMO-SURGERY-1' }));
+    const demo = createDemoBackend({ clock, latencyMs: 0 });
+    const backend = {
+      ...demo,
+      getActiveSession: async () => {
+        throw new BackendError('INTERNAL', 'The change was saved but could not be added to the audit trail. Please tell the practice manager.');
+      },
+    };
+    const user = userEvent.setup();
+    render(<App backend={backend} clock={clock} />);
+    await signIn(user);
+    expect(await screen.findByText('Could not check for an open session in this surgery')).toBeInTheDocument();
+    expect(screen.getByText(/could not be added to the audit trail/)).toBeInTheDocument();
   });
 
   it('blocks new sessions while Dentally is unavailable, and says why', async () => {

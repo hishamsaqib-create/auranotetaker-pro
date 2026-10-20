@@ -6,6 +6,8 @@ import type { AppBackend, CurrentUser } from './types.ts';
 import { BackendError } from './types.ts';
 
 const DEVICE_KEY = 'auranotetaker.device-id';
+/** Longest wait for any backend function. Confirmation re-checks Dentally, so allow for its retries. */
+const REQUEST_TIMEOUT_MS = 30_000;
 
 /** A random ID per browser, used to spot two screens working on one session. Not personal data. */
 function deviceId(): string {
@@ -31,14 +33,30 @@ export function createBase44Backend(cfg: { appId: string; serverUrl?: string }):
 
   async function call<T>(name: string, data: Record<string, unknown> = {}): Promise<T> {
     let res: Response;
+    // A request that never answers must fail, not leave buttons waiting for ever: callers retry on the next refresh.
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        controller.abort();
+        reject(new BackendError('TIMEOUT', 'AuraNoteTaker\'s server took too long to answer. Try again.'));
+      }, REQUEST_TIMEOUT_MS);
+    });
     try {
-      res = await base44.functions.fetch(`/${name}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Device-Id': device },
-        body: JSON.stringify(data),
-      });
-    } catch {
+      res = await Promise.race([
+        base44.functions.fetch(`/${name}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Device-Id': device },
+          body: JSON.stringify(data),
+          signal: controller.signal,
+        }),
+        timeout,
+      ]);
+    } catch (err) {
+      if (err instanceof BackendError) throw err;
       throw new BackendError('NETWORK', 'AuraNoteTaker cannot reach its server. Check the internet connection.');
+    } finally {
+      clearTimeout(timer);
     }
     const body = (await res.json().catch(() => null)) as { error?: { code?: string; message?: string; details?: Record<string, unknown> } } | null;
     if (!res.ok) {
