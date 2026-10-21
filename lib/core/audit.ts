@@ -81,6 +81,25 @@ export const AUDIT_DETAIL_RULES = {
   },
   // A finished note was copied for pasting into Dentally. Never the text: which template and how many blanks were left.
   NOTE_COPIED: { templateId: nullable(isId), unfilledCount: isCount, source: oneOf('SESSION', 'STANDALONE'), aiDraft: isBool },
+  // A note was checked for contradictions by the AI. How it went and how many points were raised; never the text.
+  NOTE_CHECKED: {
+    provider: oneOf('ANTHROPIC', 'DEMO'),
+    outcome: oneOf('CHECKED', 'FAILED'),
+    findingCount: isCount,
+    segmentCount: isCount,
+    hasNurseNote: isBool,
+  },
+  // The notes-to-do list was viewed (it shows patient names): which day and clinician, and counts.
+  NOTES_TODO_VIEWED: {
+    date: isDate,
+    practitionerId: nullable(isId),
+    appointmentCount: isCount,
+    outstandingCount: isCount,
+    checkCount: isCount,
+    rejectedCount: isCount,
+  },
+  // An appointment's note was ticked off as written in Dentally, or the tick was taken off.
+  NOTE_STATUS_CHANGED: { status: oneOf('WRITTEN_IN_DENTALLY', 'NOT_DONE'), date: isDate },
   // Configuration only (clinic, staff profiles, clinicians, surgeries): counts, never names or emails.
   CONFIG_CHANGED: {
     entity: oneOf('CLINIC', 'STAFF_PROFILE', 'CLINICIAN', 'SURGERY', 'NOTE_TEMPLATE'),

@@ -19,6 +19,7 @@
 
 import type { AuditEvent } from '../lib/core/audit.ts';
 import type { NoteTemplate } from '../lib/core/noteTemplates.ts';
+import type { NoteMark } from '../lib/core/notesToDo.ts';
 import type { ScribeSession } from '../lib/core/session.ts';
 import { KNOWN_APPOINTMENT_STATES } from '../lib/core/appointments.ts';
 import { isTerminal } from '../lib/core/session.ts';
@@ -40,6 +41,7 @@ import type {
   ClinicianRecord,
   HandlerDeps,
   NoteGenerator,
+  NoteMarkStore,
   ScribeContentStore,
   SessionRepository,
   SpeechToken,
@@ -811,6 +813,63 @@ export class AnthropicNoteGenerator implements NoteGenerator {
   }
 }
 
+/** Which appointments' notes are done (NoteStatus entity). Identifiers, dates and staff emails only. */
+export class Base44NoteMarkStore implements NoteMarkStore {
+  constructor(private readonly base44: Base44Like) {}
+
+  private get entity(): EntityApi {
+    return this.base44.asServiceRole.entities.NoteStatus!;
+  }
+
+  private static toMark(r: Row): NoteMark {
+    const appointmentId = str(r.dentally_appointment_id);
+    const practitionerId = str(r.practitioner_id);
+    const date = str(r.appointment_date);
+    const byEmail = str(r.by_email);
+    const atMs = isoToMs(r.marked_at);
+    const status = r.status === 'COPIED' || r.status === 'WRITTEN_IN_DENTALLY' ? r.status : null;
+    if (!appointmentId || !practitionerId || !date || !byEmail || atMs === null || !status) throw new AppError('INTERNAL', UNREADABLE);
+    return { appointmentId, practitionerId, date, status, byEmail, atMs, sessionId: str(r.session_id) };
+  }
+
+  async listByDate(clinicId: string, date: string): Promise<NoteMark[]> {
+    return (await allRows(this.entity, { clinic_id: clinicId, appointment_date: date })).map(Base44NoteMarkStore.toMark);
+  }
+
+  private async rows(clinicId: string, appointmentId: string): Promise<Row[]> {
+    return allRows(this.entity, { clinic_id: clinicId, dentally_appointment_id: appointmentId });
+  }
+
+  async get(clinicId: string, appointmentId: string): Promise<NoteMark | null> {
+    const rows = await this.rows(clinicId, appointmentId);
+    if (rows.length > 1) throw new AppError('INTERNAL', UNREADABLE);
+    return rows[0] ? Base44NoteMarkStore.toMark(rows[0]) : null;
+  }
+
+  async save(clinicId: string, mark: NoteMark): Promise<void> {
+    const data = compact({
+      clinic_id: clinicId,
+      dentally_appointment_id: mark.appointmentId,
+      practitioner_id: mark.practitionerId,
+      appointment_date: mark.date,
+      status: mark.status,
+      by_email: mark.byEmail,
+      marked_at: msToIso(mark.atMs),
+      session_id: mark.sessionId,
+    });
+    const rows = await this.rows(clinicId, mark.appointmentId);
+    if (rows.length > 1) throw new AppError('INTERNAL', UNREADABLE);
+    if (rows[0]?.id) await this.entity.update(rows[0].id, { ...data, session_id: mark.sessionId ?? '' });
+    else await this.entity.create(data);
+  }
+
+  async remove(clinicId: string, appointmentId: string): Promise<boolean> {
+    const rows = await this.rows(clinicId, appointmentId);
+    for (const r of rows) if (r.id) await this.entity.delete(r.id);
+    return rows.length > 0;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Wiring
 
@@ -843,6 +902,7 @@ export async function buildDeps(base44: Base44Like, clinic: ClinicConfig, readSe
       },
     },
     notes: new AnthropicNoteGenerator(readSecret),
+    noteMarks: new Base44NoteMarkStore(base44),
   };
 }
 

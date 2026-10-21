@@ -19,6 +19,10 @@ import { zonedDateString } from '../core/time.ts';
 import type { NoteTemplate } from '../core/noteTemplates.ts';
 import { checkTemplate, STARTER_TEMPLATES } from '../core/noteTemplates.ts';
 import { buildNotePrompt, MAX_CLINICIAN_NOTES, NOTE_MAX_TOKENS, NOTE_SYSTEM_PROMPT } from '../core/noteGeneration.ts';
+import type { NoteFinding } from '../core/noteCheck.ts';
+import { buildNoteCheckPrompt, MAX_CHECK_NOTE, NOTE_CHECK_MAX_TOKENS, NOTE_CHECK_SYSTEM_PROMPT, parseNoteCheckReply } from '../core/noteCheck.ts';
+import type { NoteMark, NoteMarkStatus } from '../core/notesToDo.ts';
+import { noteDue, notesToDoDates } from '../core/notesToDo.ts';
 import type { NurseNote, TranscriptSegment } from '../core/transcript.ts';
 import { contentDeleteAfterMs, orderSegments, validateNurseNoteText, validateSegments } from '../core/transcript.ts';
 import { DentallyError } from '../dentally/client.ts';
@@ -864,7 +868,284 @@ export async function recordNoteCopied(
     dentallyAppointmentId: session?.patient.appointment.appointmentId ?? null,
     details: { templateId, unfilledCount, source: session ? 'SESSION' : 'STANDALONE', aiDraft: optBool(input.aiDraft, 'aiDraft') },
   });
+  if (session) {
+    // Ticks the appointment off the notes-to-do list. A standalone note has no appointment: it is ticked off by hand.
+    const a = session.patient.appointment;
+    try {
+      await deps.noteMarks.save(ctx.clinicId, {
+        appointmentId: a.appointmentId,
+        practitionerId: a.practitionerId,
+        date: zonedDateString(a.startMs, deps.clinic.timeZone),
+        status: 'COPIED',
+        byEmail: ctx.email,
+        atMs: deps.clock(),
+        sessionId: session.sessionId,
+      });
+    } catch {
+      throw new AppError('INTERNAL', 'The note was copied, but it could not be ticked off the notes to do list. Tick it off there by hand.');
+    }
+  }
   return { recorded: true };
+}
+
+// ---------------------------------------------------------------------------
+// Notes to do
+
+export type NoteState = 'NOT_DONE' | NoteMarkStatus;
+
+export interface NoteToDoItem {
+  appointmentId: string;
+  practitionerId: string;
+  clinicianName: string | null;
+  startTime: string;
+  finishTime: string;
+  /** Display only. Never stored by AuraNoteTaker. */
+  patientName: string | null;
+  reason: string | null;
+  state: DiaryAppointment['state'];
+  rawState: string | null;
+  /** DUE: it happened. CHECK: its time has passed but Dentally does not show it as completed. */
+  due: 'DUE' | 'CHECK';
+  note: NoteState;
+  markedBy: string | null;
+  markedAt: string | null;
+  /** The AuraNoteTaker session for the appointment, if there was one. */
+  scribeStatus: ScribeSession['status'] | null;
+}
+
+export interface NotesToDoResponse {
+  date: string;
+  /** The days that can be chosen, newest first. */
+  dates: string[];
+  timeZone: string;
+  /** Null when the list covers every clinician. */
+  practitionerId: string | null;
+  items: NoteToDoItem[];
+  outstandingCount: number;
+  checkCount: number;
+  doneCount: number;
+  /** Appointments still to come or in progress (not listed). */
+  laterCount: number;
+  rejectedCount: number;
+}
+
+/**
+ * Finished appointments for one day and whether their note has been done, for one clinician or (with no clinician)
+ * every configured clinician. Shows patient names, so it is audited like the diary.
+ */
+export async function getNotesToDo(ctx: StaffContext, deps: HandlerDeps, input: { date?: unknown; practitionerId?: unknown }): Promise<NotesToDoResponse> {
+  await requireRole(ctx, deps, [...CLINICAL_ROLES, 'CLINIC_ADMIN'], 'getNotesToDo');
+  const now = deps.clock();
+  const tz = deps.clinic.timeZone;
+  const dates = notesToDoDates(zonedDateString(now, tz));
+  const date = input.date === undefined || input.date === null || input.date === '' ? dates[0]! : reqEnum(input.date, dates, 'date');
+  const practitionerId = optId(input.practitionerId, 'clinician');
+  const clinicians = await deps.directory.listClinicians(deps.clinic.clinicId);
+  if (practitionerId) await requireClinician(deps, practitionerId);
+  const names = new Map(clinicians.map((c) => [c.practitionerId, c.displayName]));
+
+  const result = await callDentally(() =>
+    practitionerId
+      ? deps.dentally.getClinicianAppointments({ date, practitionerId, siteId: deps.clinic.dentallySiteId })
+      : deps.dentally.getTodaysAppointments({ date, siteId: deps.clinic.dentallySiteId }),
+  );
+  const day = result.appointments
+    .filter((a) => (practitionerId ? a.practitionerId === practitionerId : names.has(a.practitionerId)))
+    .filter((a) => zonedDateString(a.startMs, tz) === date)
+    .sort((x, y) => x.startMs - y.startMs || (x.appointmentId < y.appointmentId ? -1 : 1));
+
+  let marks: NoteMark[];
+  let sessions: ScribeSession[];
+  try {
+    [marks, sessions] = await Promise.all([
+      deps.noteMarks.listByDate(ctx.clinicId, date),
+      deps.sessions.findByAppointments(ctx.clinicId, day.map((a) => a.appointmentId)),
+    ]);
+  } catch {
+    throw new AppError('INTERNAL', 'Could not read which notes have been done. Try again.');
+  }
+  const markFor = new Map(marks.map((m) => [m.appointmentId, m]));
+  const lastChange = (x: ScribeSession) => x.statusHistory.at(-1)?.atMs ?? 0;
+  const sessionFor = new Map<string, ScribeSession>();
+  for (const x of sessions) {
+    const id = x.patient.appointment.appointmentId;
+    const prev = sessionFor.get(id);
+    if (!prev || lastChange(x) >= lastChange(prev)) sessionFor.set(id, x);
+  }
+
+  const items: NoteToDoItem[] = [];
+  let laterCount = 0;
+  for (const a of day) {
+    const due = noteDue(a, now);
+    if (due === null) {
+      if (a.patientId && a.state !== 'Cancelled' && a.state !== 'Did not attend') laterCount += 1;
+      continue;
+    }
+    const mark = markFor.get(a.appointmentId) ?? null;
+    items.push({
+      appointmentId: a.appointmentId,
+      practitionerId: a.practitionerId,
+      clinicianName: names.get(a.practitionerId) ?? null,
+      startTime: new Date(a.startMs).toISOString(),
+      finishTime: new Date(a.finishMs).toISOString(),
+      patientName: a.patientName,
+      reason: a.reason,
+      state: a.state,
+      rawState: a.rawState,
+      due,
+      note: mark?.status ?? 'NOT_DONE',
+      markedBy: mark?.byEmail ?? null,
+      markedAt: mark ? new Date(mark.atMs).toISOString() : null,
+      scribeStatus: sessionFor.get(a.appointmentId)?.status ?? null,
+    });
+  }
+  const outstandingCount = items.filter((i) => i.note === 'NOT_DONE' && i.due === 'DUE').length;
+  const checkCount = items.filter((i) => i.note === 'NOT_DONE' && i.due === 'CHECK').length;
+
+  const dedupeKey = `NOTES_TODO:${practitionerId ?? 'ALL'}:${date}`;
+  if (!(await deps.audit.hasRecent(ctx.clinicId, ctx.email, dedupeKey, now - DIARY_AUDIT_WINDOW_MS))) {
+    await audit(ctx, deps, 'NOTES_TODO_VIEWED', {
+      dedupeKey,
+      details: { date, practitionerId, appointmentCount: items.length, outstandingCount, checkCount, rejectedCount: result.rejectedCount },
+    });
+  }
+  return {
+    date,
+    dates,
+    timeZone: tz,
+    practitionerId,
+    items,
+    outstandingCount,
+    checkCount,
+    doneCount: items.length - outstandingCount - checkCount,
+    laterCount,
+    rejectedCount: result.rejectedCount,
+  };
+}
+
+/**
+ * Ticks an appointment's note off as written straight into Dentally (AuraNoteTaker cannot read Dentally's notes),
+ * or takes that tick off. The appointment is re-read from Dentally; nothing is written to Dentally.
+ */
+export async function markNoteWritten(
+  ctx: StaffContext,
+  deps: HandlerDeps,
+  input: { appointmentId?: unknown; written?: unknown },
+): Promise<{ appointmentId: string; note: NoteState }> {
+  await requireRole(ctx, deps, CLINICAL_ROLES, 'markNoteWritten');
+  const appointmentId = reqId(input.appointmentId, 'appointment');
+  const written = reqBool(input.written, 'written');
+  const a = await callDentally(() => deps.dentally.getAppointment(appointmentId));
+  if (!a || !a.patientId) throw new AppError('NOT_FOUND', 'Dentally no longer has this appointment. Refresh the list.');
+  await requireClinician(deps, a.practitionerId);
+  const now = deps.clock();
+  const date = zonedDateString(a.startMs, deps.clinic.timeZone);
+  if (!notesToDoDates(zonedDateString(now, deps.clinic.timeZone)).includes(date)) {
+    throw new AppError('VALIDATION', 'Only appointments from the last two weeks can be ticked off here.');
+  }
+  if (noteDue(a, now) === null) throw new AppError('VALIDATION', 'This appointment has not finished, so it has no note to tick off yet.');
+
+  const existing = await deps.noteMarks.get(ctx.clinicId, appointmentId);
+  const change = async (status: 'WRITTEN_IN_DENTALLY' | 'NOT_DONE') =>
+    auditAfterChange(ctx, deps, 'NOTE_STATUS_CHANGED', {
+      dentallyPatientId: a.patientId,
+      dentallyAppointmentId: appointmentId,
+      details: { status, date },
+    });
+  if (written) {
+    if (existing) return { appointmentId, note: existing.status };
+    await deps.noteMarks.save(ctx.clinicId, {
+      appointmentId,
+      practitionerId: a.practitionerId,
+      date,
+      status: 'WRITTEN_IN_DENTALLY',
+      byEmail: ctx.email,
+      atMs: now,
+      sessionId: null,
+    });
+    await change('WRITTEN_IN_DENTALLY');
+    return { appointmentId, note: 'WRITTEN_IN_DENTALLY' };
+  }
+  if (existing?.status === 'COPIED') {
+    throw new AppError('VALIDATION', 'This note was copied from AuraNoteTaker, so it stays ticked off. Check Dentally if you think it was not pasted.');
+  }
+  if (existing) {
+    await deps.noteMarks.remove(ctx.clinicId, appointmentId);
+    await change('NOT_DONE');
+  }
+  return { appointmentId, note: 'NOT_DONE' };
+}
+
+// ---------------------------------------------------------------------------
+// Note check
+
+export interface CheckNoteResponse {
+  /** Points for the clinician to look at again. Advisory: an empty list is not proof the note is right. */
+  findings: NoteFinding[];
+  provider: 'ANTHROPIC' | 'DEMO';
+  model: string;
+  /** Whether a transcript or nurse notes were there to compare the note with. */
+  comparedWithSources: boolean;
+}
+
+/**
+ * Asks the AI to find contradictions in a session's note, within the note and against the session's transcript and
+ * nurse notes.
+ *
+ * SAFETY (decision D7): only for a patient who agreed to AI processing. The note is sent, checked and forgotten:
+ * neither the note nor the findings are stored, and the audit records only how many points were raised. A reply
+ * that cannot be read is an error, never "nothing found".
+ */
+export async function checkNote(
+  ctx: StaffContext,
+  deps: HandlerDeps,
+  input: { sessionId?: unknown; surgeryId?: unknown; note?: unknown },
+): Promise<CheckNoteResponse> {
+  const s = await loadScribeSession(ctx, deps, input, 'checkNote');
+  if (s.consent.status !== 'GIVEN') {
+    throw new AppError('SESSION_TRANSITION_REFUSED', 'The patient did not agree to AI processing, so this note cannot be checked by AI. Check it yourself.');
+  }
+  if (s.status === 'RECORDING') throw new AppError('SESSION_TRANSITION_REFUSED', 'Pause or stop recording first, so the check sees the whole transcript.');
+  if (!GENERATE_STATUSES.has(s.status)) throw new AppError('SESSION_TRANSITION_REFUSED', 'This note cannot be checked by AI now.');
+  if (typeof input.note !== 'string') throw new AppError('VALIDATION', 'The note could not be read.');
+  if (input.note.length > MAX_CHECK_NOTE) throw new AppError('VALIDATION', 'This note is too long to check in one go.');
+
+  const content = await readScribeContent(ctx, deps, s);
+  const nurseNotes = content.nurseNote?.text ?? null;
+  const built = buildNoteCheckPrompt({ note: input.note, segments: content.segments, nurseNotes });
+  if (!built.ok) throw new AppError('VALIDATION', built.message);
+
+  const base = {
+    provider: deps.notes.provider,
+    segmentCount: content.segments.length,
+    hasNurseNote: nurseNotes !== null && nurseNotes.trim() !== '',
+  };
+  const ids = { sessionId: s.sessionId, dentallyPatientId: s.patient.dentallyPatientId, dentallyAppointmentId: s.patient.appointment.appointmentId };
+  let findings: NoteFinding[] | null = null;
+  let model = '';
+  let failure: AppError | null = null;
+  try {
+    const r = await deps.notes.generate({ system: NOTE_CHECK_SYSTEM_PROMPT, prompt: built.prompt, maxTokens: NOTE_CHECK_MAX_TOKENS });
+    model = r.model;
+    findings = parseNoteCheckReply(r.text, input.note);
+    if (findings === null) failure = new AppError('LLM_UNAVAILABLE', 'The AI check gave an answer that could not be read, so nothing was checked. Try again, or check the note yourself.');
+  } catch (err) {
+    const kind = err instanceof NoteGeneratorError ? err.kind : 'UNAVAILABLE';
+    failure =
+      kind === 'NOT_CONFIGURED' || kind === 'AUTH'
+        ? new AppError('LLM_NOT_CONFIGURED', 'AuraNoteTaker could not sign in to the AI service. Please tell the practice manager.')
+        : kind === 'REFUSED'
+          ? new AppError('LLM_UNAVAILABLE', 'The AI service would not check this note. Check it yourself.')
+          : kind === 'INCOMPLETE'
+            ? new AppError('LLM_UNAVAILABLE', 'The check was cut short, so it was not shown. Try again, or check the note yourself.')
+            : new AppError('LLM_UNAVAILABLE', 'The AI service is not responding. Try again shortly, or check the note yourself.');
+  }
+  await audit(ctx, deps, 'NOTE_CHECKED', {
+    ...ids,
+    details: { ...base, outcome: failure ? 'FAILED' : 'CHECKED', findingCount: findings?.length ?? 0 },
+  });
+  if (failure || findings === null) throw failure ?? new AppError('LLM_UNAVAILABLE', 'The check failed.');
+  return { findings, provider: deps.notes.provider, model, comparedWithSources: base.segmentCount > 0 || base.hasNurseNote };
 }
 
 export interface GenerateNoteResponse {

@@ -7,7 +7,10 @@ import type {
   ActiveSessionResponse,
   ClinicSetupResponse,
   ConfirmPatientResponse,
+  CheckNoteResponse,
   ConnectionChecksResponse,
+  NotesToDoResponse,
+  NoteState,
   GenerateNoteResponse,
   DentallyCheckResponse,
   DiaryResponse,
@@ -77,6 +80,12 @@ export interface AppBackend {
   recordNoteCopied(input: { sessionId: string | null; templateId: string | null; unfilledCount: number; aiDraft: boolean }): Promise<{ recorded: true }>;
   /** Drafts the session's note with AI from its transcript, nurse notes and the clinician's own notes. */
   generateNote(input: { sessionId: string; surgeryId: string; templateId: string | null; clinicianNotes: string; lastSeq: number }): Promise<GenerateNoteResponse>;
+  /** Asks the AI to find contradictions in a session's note, within it and against the transcript and nurse notes. */
+  checkNote(input: { sessionId: string; surgeryId: string; note: string }): Promise<CheckNoteResponse>;
+  /** Finished appointments for one day and whether their note is done; every clinician when none is given. */
+  getNotesToDo(input: { date: string | null; practitionerId: string | null }): Promise<NotesToDoResponse>;
+  /** Ticks a note off as written straight into Dentally, or takes the tick off. */
+  markNoteWritten(appointmentId: string, written: boolean): Promise<{ appointmentId: string; note: NoteState }>;
   /** Practice manager: tests the AI and speech-to-text keys with a message holding no patient data. */
   checkConnections(): Promise<ConnectionChecksResponse>;
   /** Practice manager: today's Dentally diary counted by practitioner and room ID (no patient data). */

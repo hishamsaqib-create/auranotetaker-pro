@@ -16,6 +16,9 @@ import {
   getClinicSetup,
   generateNote,
   checkConnections,
+  checkNote,
+  getNotesToDo,
+  markNoteWritten,
   getDentallyCheck,
   listNoteTemplates,
   recordNoteCopied,
@@ -35,6 +38,7 @@ import {
   DemoNoteGenerator,
   DemoSpeechTokenIssuer,
   InMemoryAuditSink,
+  InMemoryNoteMarkStore,
   InMemoryScribeContentStore,
   InMemorySessionRepository,
   RecordingInviter,
@@ -103,6 +107,7 @@ export function createDemoBackend(opts: DemoBackendOptions = {}): AppBackend {
     speech: new DemoSpeechTokenIssuer(clock),
     invites: new RecordingInviter(),
     notes: new DemoNoteGenerator(),
+    noteMarks: new InMemoryNoteMarkStore(),
   };
 
   let user: DemoUserRecord | null = null;
@@ -175,6 +180,9 @@ export function createDemoBackend(opts: DemoBackendOptions = {}): AppBackend {
     saveNoteTemplate: (t) => run(() => saveNoteTemplate(ctx(), deps, { ...t })),
     recordNoteCopied: (input) => run(() => recordNoteCopied(ctx(), deps, { ...input })),
     generateNote: (input) => run(() => generateNote(ctx(), deps, { ...input })),
+    checkNote: (input) => run(() => checkNote(ctx(), deps, { ...input })),
+    getNotesToDo: (input) => run(() => getNotesToDo(ctx(), deps, { ...input })),
+    markNoteWritten: (appointmentId, written) => run(() => markNoteWritten(ctx(), deps, { appointmentId, written })),
     changeRecording: (sessionId, surgeryId, action, expectedVersion) =>
       run(() => changeRecording(ctx(), deps, { sessionId, surgeryId, action, expectedVersion })),
     getSpeechToken: (sessionId, surgeryId) => run(() => getSpeechToken(ctx(), deps, { sessionId, surgeryId })),

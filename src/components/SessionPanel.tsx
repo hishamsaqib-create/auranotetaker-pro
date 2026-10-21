@@ -278,6 +278,16 @@ export function SessionPanel(p: SessionPanelProps) {
                     }
                   : undefined
               }
+              // The AI check, like drafting, only with the patient's permission and once everything is saved.
+              checkWithAi={
+                s.consent.status === 'GIVEN' && s.status !== 'RECORDING'
+                  ? async (note) => {
+                      const waiting = pendingSaveProblem();
+                      if (waiting) throw new Error(waiting);
+                      return p.backend.checkNote({ sessionId: s.sessionId, surgeryId: p.currentSurgeryId, note });
+                    }
+                  : undefined
+              }
               generateUnavailable={
                 s.consent.status !== 'GIVEN'
                   ? 'The patient did not agree to the AI scribe, so the note cannot be drafted with AI. Write it from a template.'

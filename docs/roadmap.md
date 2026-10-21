@@ -19,6 +19,7 @@ These are the escalations the spec reserves for Hisham: clinical safety, patient
 | **D8** | Dentally credentials | **Decided:** a separate read-only key for the AuraNoteTaker app (not AuraMail's), sandbox first. Entered by Hisham straight into the Base44 app's secrets, never sent in chat | Phase 1 integration |
 | **D9** | Identity confirmation while Dentally is down | Not allowed in v1: active sessions continue, new sessions wait for Dentally | Phase 4 |
 | **D10** | Who sees clinician audit dashboards | Each clinician sees their own; clinical lead and auditor see all; no league tables; clinicians informed before launch | Phase 6 |
+| **D11** | AI contradiction check on notes written outside a session | **Proposed:** not allowed for now. The AI check runs only in a session whose patient agreed to AI processing; standalone notes get the on-computer rule check only, because the app cannot tell whether that patient declined. Hisham to confirm | Phase 3 |
 
 ## Blockers and API limitations
 
