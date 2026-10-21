@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { NoteTemplate } from '../../lib/core/noteTemplates.ts';
 import { fillTemplate, templateFields, unfilledBlanks } from '../../lib/core/noteTemplates.ts';
-import type { GenerateNoteResponse } from '../../lib/server/handlers.ts';
+import type { NoteFinding } from '../../lib/core/noteCheck.ts';
+import { quickCheckNote } from '../../lib/core/noteCheck.ts';
+import type { CheckNoteResponse, GenerateNoteResponse } from '../../lib/server/handlers.ts';
 import type { AppBackend } from '../backend/types.ts';
 import { setNoteUncopied } from '../scribe/noteGuard.ts';
 import { Notice } from './Notice.tsx';
@@ -18,6 +20,8 @@ export interface NoteWriterProps {
   canManageTemplates: boolean;
   /** Drafts the note with AI from the session's transcript and notes. Absent when AI may not be used. */
   generate?: (templateId: string | null, clinicianNotes: string) => Promise<GenerateNoteResponse>;
+  /** Checks the note with AI against the session's transcript and notes. Absent when AI may not be used. */
+  checkWithAi?: (note: string) => Promise<CheckNoteResponse>;
   /** Shown instead of the Generate button when AI is not available here, e.g. the patient declined. */
   generateUnavailable?: string | null;
   /** Injected in tests. */
@@ -32,7 +36,7 @@ export interface NoteWriterProps {
  * (inside a session) or that no patient is selected, and warns about blanks still unfilled. The copy is audited
  * without its text. AuraNoteTaker never writes to Dentally; the clinician pastes the note.
  */
-export function NoteWriter({ backend, patientLabel, sessionId, canManageTemplates, generate, generateUnavailable, copyText }: NoteWriterProps) {
+export function NoteWriter({ backend, patientLabel, sessionId, canManageTemplates, generate, checkWithAi, generateUnavailable, copyText }: NoteWriterProps) {
   const [templates, setTemplates] = useState<NoteTemplate[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [templateId, setTemplateId] = useState<string>(BLANK);
@@ -53,6 +57,14 @@ export function NoteWriter({ backend, patientLabel, sessionId, canManageTemplate
   const [chosen, setChosen] = useState<NoteTemplate | null>(null);
   const textRef = useRef(text);
   textRef.current = text;
+  /** The latest check: the text it was run on, the fixed-rule findings and, if run, the AI's. */
+  const [check, setCheck] = useState<{
+    text: string;
+    quick: NoteFinding[];
+    ai: CheckNoteResponse | null;
+    aiError: string | null;
+    aiRunning: boolean;
+  } | null>(null);
 
   const load = () => {
     setLoadError(null);
@@ -125,6 +137,20 @@ export function NoteWriter({ backend, patientLabel, sessionId, canManageTemplate
       setGenerateError(err instanceof Error ? err.message : 'The note could not be drafted. Try again, or write it from the template.');
     } finally {
       setGenerating(false);
+    }
+  }
+
+  async function runCheck() {
+    const checkedText = text;
+    const quick = quickCheckNote(checkedText);
+    setCheck({ text: checkedText, quick, ai: null, aiError: null, aiRunning: Boolean(checkWithAi) });
+    if (!checkWithAi) return;
+    try {
+      const ai = await checkWithAi(checkedText);
+      setCheck((c) => (c && c.text === checkedText ? { ...c, ai, aiRunning: false } : c));
+    } catch (err) {
+      const aiError = err instanceof Error ? err.message : 'The AI check did not work. Check the note yourself.';
+      setCheck((c) => (c && c.text === checkedText ? { ...c, aiError, aiRunning: false } : c));
     }
   }
 
@@ -306,6 +332,17 @@ export function NoteWriter({ backend, patientLabel, sessionId, canManageTemplate
           {canManageTemplates ? ' Make the clinic\'s own version under Manage templates.' : ''}
         </p>
       )}
+      <div className="generate-row">
+        <button type="button" className="button button-secondary" disabled={!text.trim() || generating || check?.aiRunning === true} onClick={() => void runCheck()}>
+          {check?.aiRunning ? 'Checking the note…' : 'Check for contradictions'}
+        </button>
+        <span className="admin-sub">
+          {checkWithAi
+            ? 'Looks for statements that disagree with each other or with the transcript and nurse notes.'
+            : 'Looks for common statements that disagree with each other. Checked on this computer; nothing is sent anywhere.'}
+        </span>
+      </div>
+      {check && <CheckResults check={check} stale={check.text !== text} />}
       {copied && <Notice tone="info" title={copied} />}
       {copyError && <Notice tone="bad" title={copyError} />}
       <div className="actions">
@@ -335,6 +372,75 @@ export function NoteWriter({ backend, patientLabel, sessionId, canManageTemplate
           Clear
         </button>
       </div>
+    </section>
+  );
+}
+
+const KIND_LABEL: Record<NoteFinding['kind'], string> = {
+  CONTRADICTION: 'Contradiction',
+  NOT_IN_SOURCES: 'Not in the transcript or nurse notes',
+  UNCLEAR: 'Unclear',
+  UNFINISHED: 'Still to check',
+};
+
+function FindingList({ findings }: { findings: NoteFinding[] }) {
+  return (
+    <ul className="check-findings">
+      {findings.map((f, i) => (
+        <li key={i} className={`check-finding check-${f.kind.toLowerCase()}`}>
+          <span className="check-kind">{KIND_LABEL[f.kind]}</span> {f.message}
+          {f.quotes.length > 0 && (
+            <ul className="check-quotes">
+              {f.quotes.map((q, j) => (
+                <li key={j}>
+                  <q>{q}</q>
+                </li>
+              ))}
+            </ul>
+          )}
+          {!f.quotesFound && <p className="admin-sub">These words are not in the note exactly as quoted: find the line yourself.</p>}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/**
+ * What the check found. SAFETY: findings are pointers for the clinician, never corrections, and "nothing found" is
+ * worded so it cannot be read as the note being right.
+ */
+function CheckResults({
+  check,
+  stale,
+}: {
+  check: { quick: NoteFinding[]; ai: CheckNoteResponse | null; aiError: string | null; aiRunning: boolean };
+  stale: boolean;
+}) {
+  // A point the quick check already raised about the same lines is shown once.
+  const quick = check.quick;
+  const seen = new Set(quick.flatMap((f) => f.quotes));
+  const ai = (check.ai?.findings ?? []).filter((f) => f.quotes.length === 0 || !f.quotes.every((q) => seen.has(q)));
+  const all = [...quick, ...ai];
+  return (
+    <section className="check-results" aria-label="Note check">
+      {stale && <Notice tone="warn" title="The note has changed since it was checked. Check it again before copying." />}
+      {all.length > 0 ? (
+        <Notice tone="warn" title={`${all.length} point${all.length === 1 ? '' : 's'} to look at again`}>
+          <FindingList findings={all} />
+        </Notice>
+      ) : (
+        !check.aiRunning &&
+        !check.aiError && (
+          <Notice tone="info" title="No contradictions found">
+            {check.ai
+              ? `The AI check${check.ai.comparedWithSources ? ' compared the note with the transcript and nurse notes and' : ''} found nothing to point out.`
+              : 'The quick check only looks for a few common slips.'}{' '}
+            This does not replace your own check of every line.
+          </Notice>
+        )
+      )}
+      {check.aiRunning && <p className="state-lead">The AI is checking the note…</p>}
+      {check.aiError && <Notice tone="bad" title={check.aiError} />}
     </section>
   );
 }

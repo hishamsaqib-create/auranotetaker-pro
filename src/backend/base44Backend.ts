@@ -107,6 +107,9 @@ export function createBase44Backend(cfg: { appId: string; serverUrl?: string }):
     saveNoteTemplate: (t) => call('saveNoteTemplate', { ...t }),
     recordNoteCopied: (input) => call('recordNoteCopied', { ...input }),
     // Drafting can take most of a minute; the server gives up at 55 s, so this always hears the outcome.
+    checkNote: (input) => call('checkNote', { ...input }, 75_000),
+    getNotesToDo: (input) => call('getNotesToDo', { ...input }),
+    markNoteWritten: (appointmentId, written) => call('markNoteWritten', { appointmentId, written }),
     generateNote: (input) => call('generateNote', { ...input }, 75_000),
     changeRecording: (sessionId, surgeryId, action, expectedVersion) => call('changeRecording', { sessionId, surgeryId, action, expectedVersion }),
     getSpeechToken: (sessionId, surgeryId) => call('getSpeechToken', { sessionId, surgeryId }),

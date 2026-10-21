@@ -20,6 +20,9 @@ import {
   getClinicSetup,
   checkConnections,
   generateNote,
+  checkNote,
+  getNotesToDo,
+  markNoteWritten,
   getDentallyCheck,
   getMe,
   listNoteTemplates,
@@ -36,6 +39,7 @@ import {
   DemoNoteGenerator,
   DemoSpeechTokenIssuer,
   InMemoryAuditSink,
+  InMemoryNoteMarkStore,
   InMemoryScribeContentStore,
   InMemorySessionRepository,
   RecordingInviter,
@@ -59,6 +63,7 @@ let ids = 0;
 let sessions: InMemorySessionRepository;
 let auditSink: InMemoryAuditSink;
 let mock: MockDentallyService;
+let noteMarks: InMemoryNoteMarkStore;
 
 function deps(scenario: DemoScenario = 'normal', opts: { clock?: () => number; anchorMs?: number; repo?: SessionRepository } = {}): HandlerDeps {
   const clock = opts.clock ?? (() => NOW);
@@ -84,6 +89,7 @@ function deps(scenario: DemoScenario = 'normal', opts: { clock?: () => number; a
     speech: new DemoSpeechTokenIssuer(clock),
     invites: new RecordingInviter(),
     notes: new DemoNoteGenerator(),
+    noteMarks,
   };
 }
 
@@ -108,6 +114,7 @@ async function expectAppError(p: Promise<unknown>, code: string) {
 beforeEach(() => {
   sessions = new InMemorySessionRepository();
   auditSink = new InMemoryAuditSink();
+  noteMarks = new InMemoryNoteMarkStore();
 });
 
 describe('getDiary', () => {
@@ -969,5 +976,161 @@ describe('checkConnections', () => {
       const failing = { provider: 'ANTHROPIC' as const, generate: async () => Promise.reject(new NoteGeneratorError(kind)) };
       expect((await checkConnections(manager, { ...d, notes: failing })).ai.result).toBe(result);
     }
+  });
+});
+
+describe('getNotesToDo', () => {
+  it('lists finished appointments with no note, and leaves out ones still to come, cancelled or without a patient', async () => {
+    const r = await getNotesToDo(dentist, deps(), { practitionerId: 'DEMO-PR1' });
+    expect(r.date).toBe('2026-10-20');
+    expect(r.dates).toHaveLength(14);
+    expect(r.items.map((i) => i.appointmentId)).toEqual(['DEMO-A01', 'DEMO-A02', 'DEMO-A03']);
+    expect(r.items.every((i) => i.due === 'DUE' && i.note === 'NOT_DONE')).toBe(true);
+    expect(r).toMatchObject({ outstandingCount: 3, checkCount: 0, doneCount: 0, laterCount: 4 });
+    expect(r.items[0]).toMatchObject({ patientName: 'Grace Whitfield', clinicianName: 'Dr Sarah Lin' });
+  });
+
+  it('lists an appointment whose time has passed but that Dentally does not show as completed as one to check', async () => {
+    const r = await getNotesToDo(dentist, deps('previous-open'), { practitionerId: 'DEMO-PR1' });
+    expect(r.items.find((i) => i.appointmentId === 'DEMO-A03')).toMatchObject({ due: 'CHECK', state: 'Arrived' });
+    expect(r.checkCount).toBe(1);
+  });
+
+  it('counts a note copied in the session as done', async () => {
+    let t = NOW;
+    const d = deps('normal', { clock: () => t });
+    const { session } = await confirmPatient(nurse, d, confirmInput);
+    await recordNoteCopied(nurse, d, { sessionId: session.sessionId, templateId: null, unfilledCount: 0 });
+    t = NOW + 45 * 60_000; // DEMO-A04 has now finished
+    const r = await getNotesToDo(dentist, d, { practitionerId: 'DEMO-PR1' });
+    expect(r.items.find((i) => i.appointmentId === 'DEMO-A04')).toMatchObject({ note: 'COPIED', markedBy: 'nurse@aura.test', scribeStatus: 'PATIENT_CONFIRMED' });
+    expect(r.doneCount).toBe(1);
+  });
+
+  it('shows every configured clinician to the practice manager, and audits views without names', async () => {
+    const r = await getNotesToDo(manager, deps(), {});
+    expect(r.practitionerId).toBeNull();
+    expect(r.items).toHaveLength(3);
+    await getNotesToDo(manager, deps(), {});
+    const views = auditSink.events.filter((e) => e.action === 'NOTES_TODO_VIEWED');
+    expect(views).toHaveLength(1);
+    expect(views[0]!.details).toEqual({ date: '2026-10-20', practitionerId: null, appointmentCount: 3, outstandingCount: 3, checkCount: 0, rejectedCount: 0 });
+    expect(JSON.stringify(auditSink.events)).not.toMatch(/Whitfield|Grace/);
+  });
+
+  it('refuses days outside the last two weeks, unknown clinicians and the auditor', async () => {
+    await expectAppError(getNotesToDo(dentist, deps(), { date: '2026-10-21' }), 'VALIDATION');
+    await expectAppError(getNotesToDo(dentist, deps(), { date: '2026-10-01' }), 'VALIDATION');
+    await expectAppError(getNotesToDo(dentist, deps(), { practitionerId: 'PR-UNKNOWN' }), 'VALIDATION');
+    await expectAppError(getNotesToDo(auditor, deps(), {}), 'FORBIDDEN');
+  });
+
+  it('shows an earlier day from the last two weeks (empty in the demo diary)', async () => {
+    const r = await getNotesToDo(dentist, deps(), { date: '2026-10-19', practitionerId: 'DEMO-PR1' });
+    expect(r.items).toEqual([]);
+  });
+});
+
+describe('markNoteWritten', () => {
+  it('ticks a note off as written in Dentally, and takes the tick off again, with audit', async () => {
+    const d = deps();
+    expect(await markNoteWritten(dentist, d, { appointmentId: 'DEMO-A01', written: true })).toEqual({ appointmentId: 'DEMO-A01', note: 'WRITTEN_IN_DENTALLY' });
+    let r = await getNotesToDo(dentist, d, { practitionerId: 'DEMO-PR1' });
+    expect(r.items[0]).toMatchObject({ note: 'WRITTEN_IN_DENTALLY', markedBy: 'lin@aura.test' });
+    expect(r.outstandingCount).toBe(2);
+    expect(await markNoteWritten(dentist, d, { appointmentId: 'DEMO-A01', written: false })).toEqual({ appointmentId: 'DEMO-A01', note: 'NOT_DONE' });
+    r = await getNotesToDo(dentist, d, { practitionerId: 'DEMO-PR1' });
+    expect(r.outstandingCount).toBe(3);
+    const changes = auditSink.events.filter((e) => e.action === 'NOTE_STATUS_CHANGED');
+    expect(changes.map((e) => e.details.status)).toEqual(['WRITTEN_IN_DENTALLY', 'NOT_DONE']);
+    expect(changes[0]).toMatchObject({ dentallyAppointmentId: 'DEMO-A01', dentallyPatientId: 'DEMO-P1005' });
+  });
+
+  it('keeps a copied note ticked off', async () => {
+    let t = NOW;
+    const d = deps('normal', { clock: () => t });
+    const { session } = await confirmPatient(nurse, d, confirmInput);
+    await recordNoteCopied(nurse, d, { sessionId: session.sessionId, templateId: null, unfilledCount: 0 });
+    t = NOW + 45 * 60_000;
+    expect((await markNoteWritten(dentist, d, { appointmentId: 'DEMO-A04', written: true })).note).toBe('COPIED');
+    await expectAppError(markNoteWritten(dentist, d, { appointmentId: 'DEMO-A04', written: false }), 'VALIDATION');
+  });
+
+  it('refuses appointments that have not finished, unknown appointments and the practice manager', async () => {
+    await expectAppError(markNoteWritten(dentist, deps(), { appointmentId: 'DEMO-A05', written: true }), 'VALIDATION');
+    await expectAppError(markNoteWritten(dentist, deps(), { appointmentId: 'DEMO-NOPE', written: true }), 'NOT_FOUND');
+    await expectAppError(markNoteWritten(manager, deps(), { appointmentId: 'DEMO-A01', written: true }), 'FORBIDDEN');
+    await expectAppError(markNoteWritten(dentist, deps(), { appointmentId: 'DEMO-A01' }), 'VALIDATION');
+  });
+});
+
+describe('checkNote', () => {
+  const at = { surgeryId: 'surgery-1' };
+  const reply = (text: string): NoteGenerator & { calls: { system: string; prompt: string }[] } => {
+    const calls: { system: string; prompt: string }[] = [];
+    return { provider: 'ANTHROPIC', calls, generate: async (i) => (calls.push(i), { text, model: 'claude-test' }) };
+  };
+
+  async function stopped(d: HandlerDeps) {
+    const { session } = await confirmPatient(nurse, d, confirmInput);
+    const ready = (await recordConsent(nurse, d, { sessionId: session.sessionId, given: true, expectedVersion: session.version, ...at })).session;
+    const rec = (await changeRecording(nurse, d, { sessionId: ready.sessionId, action: 'START', expectedVersion: ready.version, ...at })).session;
+    await saveTranscript(nurse, d, {
+      sessionId: rec.sessionId,
+      segments: [{ kind: 'SPEECH', segmentId: 'segment-0001', seq: 1, startMs: 0, endMs: 900, speaker: 'S1', text: 'Taking out the upper left seven.' }],
+      ...at,
+    });
+    return (await changeRecording(nurse, d, { sessionId: rec.sessionId, action: 'STOP', expectedVersion: rec.version, ...at })).session;
+  }
+
+  it('returns the AI findings with quotes looked up in the note, and audits only counts', async () => {
+    const note = 'Extraction UR7. No LA.\n1 cartridge articaine buccal infiltration.';
+    const llm = reply(
+      JSON.stringify({
+        findings: [
+          { kind: 'NOT_IN_SOURCES', message: 'The transcript says upper left seven.', quotes: ['Extraction UR7.'] },
+          { kind: 'CONTRADICTION', message: 'No LA, but articaine given.', quotes: ['No LA.', 'made up words'] },
+        ],
+      }),
+    );
+    const d = { ...deps(), notes: llm };
+    const s = await stopped(d);
+    const r = await checkNote(nurse, d, { sessionId: s.sessionId, note, ...at });
+    expect(r.comparedWithSources).toBe(true);
+    expect(r.findings.map((f) => [f.kind, f.quotesFound])).toEqual([
+      ['NOT_IN_SOURCES', true],
+      ['CONTRADICTION', false],
+    ]);
+    expect(llm.calls[0]!.prompt).toContain('Taking out the upper left seven.');
+    expect(llm.calls[0]!.prompt).toContain('Extraction UR7.');
+    expect(llm.calls[0]!.prompt).not.toMatch(/Oliver|Bennett|1986/);
+    const ev = auditSink.events.filter((e) => e.action === 'NOTE_CHECKED').at(-1)!;
+    expect(ev.details).toEqual({ provider: 'ANTHROPIC', outcome: 'CHECKED', findingCount: 2, segmentCount: 1, hasNurseNote: false });
+    expect(JSON.stringify(auditSink.events)).not.toMatch(/UR7|articaine|upper left/);
+  });
+
+  it('treats an unreadable reply as a failed check, never as nothing found', async () => {
+    const d = { ...deps(), notes: reply('Looks fine to me!') };
+    const s = await stopped(d);
+    await expectAppError(checkNote(nurse, d, { sessionId: s.sessionId, note: 'Exam. NAD.', ...at }), 'LLM_UNAVAILABLE');
+    expect(auditSink.events.filter((e) => e.action === 'NOTE_CHECKED').at(-1)!.details.outcome).toBe('FAILED');
+  });
+
+  it('refuses without the patient\'s permission, while recording, for an empty note and for someone outside the session', async () => {
+    const d = deps();
+    const { session } = await confirmPatient(nurse, d, confirmInput);
+    await expectAppError(checkNote(nurse, d, { sessionId: session.sessionId, note: 'x', ...at }), 'SESSION_TRANSITION_REFUSED');
+    const ready = (await recordConsent(nurse, d, { sessionId: session.sessionId, given: true, expectedVersion: session.version, ...at })).session;
+    await expectAppError(checkNote(nurse, d, { sessionId: ready.sessionId, note: '   ', ...at }), 'VALIDATION');
+    const rec = (await changeRecording(nurse, d, { sessionId: ready.sessionId, action: 'START', expectedVersion: ready.version, ...at })).session;
+    await expectAppError(checkNote(nurse, d, { sessionId: rec.sessionId, note: 'x', ...at }), 'SESSION_TRANSITION_REFUSED');
+    await expectAppError(checkNote(otherNurse, d, { sessionId: rec.sessionId, note: 'x', ...at }), 'FORBIDDEN');
+  });
+
+  it('declined patients cannot have their note checked by AI', async () => {
+    const d = deps();
+    const { session } = await confirmPatient(nurse, d, confirmInput);
+    const declined = (await recordConsent(nurse, d, { sessionId: session.sessionId, given: false, expectedVersion: session.version, ...at })).session;
+    await expectAppError(checkNote(nurse, d, { sessionId: declined.sessionId, note: 'x', ...at }), 'SESSION_TRANSITION_REFUSED');
   });
 });

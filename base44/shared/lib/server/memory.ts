@@ -4,6 +4,8 @@
 
 import type { AuditEvent } from '../core/audit.ts';
 import type { NoteTemplate } from '../core/noteTemplates.ts';
+import type { NoteMark } from '../core/notesToDo.ts';
+import { quickCheckNote } from '../core/noteCheck.ts';
 import type { ScribeSession } from '../core/session.ts';
 import { isTerminal } from '../core/session.ts';
 import type {
@@ -12,6 +14,7 @@ import type {
   ClinicDirectory,
   ClinicianEntry,
   ClinicianRecord,
+  NoteMarkStore,
   ScribeContentStore,
   SessionRepository,
   SpeechToken,
@@ -270,6 +273,14 @@ export class RecordingInviter implements StaffInviter {
 export class DemoNoteGenerator implements NoteGenerator {
   readonly provider = 'DEMO' as const;
   async generate(input: { system: string; prompt: string; maxTokens: number }): Promise<{ text: string; model: string }> {
+    const note = /<note>\n([\s\S]*?)\n<\/note>/.exec(input.prompt)?.[1];
+    if (note !== undefined) {
+      // Demo mode has no AI: answer a note check with the fixed rules, in the AI's reply format.
+      const findings = quickCheckNote(note)
+        .filter((f) => f.kind === 'CONTRADICTION')
+        .map((f) => ({ kind: f.kind, message: `Demo check: ${f.message}`, quotes: f.quotes }));
+      return { text: JSON.stringify({ findings }), model: 'demo' };
+    }
     const template = /<template>\n([\s\S]*?)\n<\/template>/.exec(input.prompt)?.[1] ?? '';
     const transcript = /<transcript>\n([\s\S]*?)\n<\/transcript>/.exec(input.prompt)?.[1] ?? '';
     const lines = transcript.split('\n').filter((l) => l && l !== '(none)').length;
@@ -281,5 +292,26 @@ export class DemoNoteGenerator implements NoteGenerator {
       ].join('\n\n'),
       model: 'demo',
     };
+  }
+}
+
+export class InMemoryNoteMarkStore implements NoteMarkStore {
+  readonly #marks = new Map<string, NoteMark>();
+
+  async listByDate(clinicId: string, date: string): Promise<NoteMark[]> {
+    return [...this.#marks.entries()].filter(([k, m]) => k.startsWith(`${clinicId}/`) && m.date === date).map(([, m]) => ({ ...m }));
+  }
+
+  async get(clinicId: string, appointmentId: string): Promise<NoteMark | null> {
+    const m = this.#marks.get(`${clinicId}/${appointmentId}`);
+    return m ? { ...m } : null;
+  }
+
+  async save(clinicId: string, mark: NoteMark): Promise<void> {
+    this.#marks.set(`${clinicId}/${mark.appointmentId}`, { ...mark });
+  }
+
+  async remove(clinicId: string, appointmentId: string): Promise<boolean> {
+    return this.#marks.delete(`${clinicId}/${appointmentId}`);
   }
 }

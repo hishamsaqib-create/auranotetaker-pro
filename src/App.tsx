@@ -7,6 +7,7 @@ import type { ScribeOutcome, SessionRestriction, SetupOptionsResponse } from '..
 import type { AppBackend, CurrentUser } from './backend/types.ts';
 import { BackendError } from './backend/types.ts';
 import { AdminScreen } from './components/AdminScreen.tsx';
+import { NotesToDo } from './components/NotesToDo.tsx';
 import { NoteWriter } from './components/NoteWriter.tsx';
 import { confirmLeaveNote } from './scribe/noteGuard.ts';
 import { DemoBanner } from './components/DemoBanner.tsx';
@@ -119,6 +120,7 @@ function Workspace({
   const isClinical = user.roles.some((r) => r === 'DENTIST' || r === 'THERAPIST' || r === 'HYGIENIST' || r === 'NURSE');
   const [showAdmin, setShowAdmin] = useState(isAdmin && !isClinical);
   const [showNotes, setShowNotes] = useState(false);
+  const [showToDo, setShowToDo] = useState(false);
 
   useEffect(() => {
     backend
@@ -187,9 +189,10 @@ function Workspace({
       timeZone={timeZone}
       dentally={dentallyStatus}
       onChangeSetup={showAdmin || (session && !restriction) ? undefined : () => setEditingSetup(true)}
-      onOpenAdmin={isAdmin && !showAdmin && !session ? () => setShowAdmin(true) : undefined}
+      onOpenAdmin={isAdmin && (!showAdmin || showToDo) && !session ? () => { setShowToDo(false); setShowAdmin(true); } : undefined}
       // In a session the note is written from the session panel, against its locked patient.
-      onOpenNotes={isClinical && !showAdmin && !showNotes && !session ? () => setShowNotes(true) : undefined}
+      onOpenNotes={isClinical && !showAdmin && !showNotes && !showToDo && !session ? () => setShowNotes(true) : undefined}
+      onOpenToDo={options && !showNotes && !showToDo && !session ? () => setShowToDo(true) : undefined}
       onSignOut={onSignOut}
     />
   );
@@ -206,6 +209,26 @@ function Workspace({
           </button>
           <NoteWriter backend={backend} patientLabel={null} sessionId={null} canManageTemplates={isAdmin} />
         </main>
+      </div>
+    );
+  }
+
+  if (showToDo && options && !session) {
+    return (
+      <div className="app">
+        {header}
+        {banner}
+        <NotesToDo
+          backend={backend}
+          clinicians={options.clinicians}
+          // A clinician starts on their own list; on a surgery computer, the clinician it is set up for.
+          initialPractitionerId={
+            [user.defaultClinicianId, clinician?.practitionerId].find((id) => id && options.clinicians.some((c) => c.practitionerId === id)) ?? null
+          }
+          timeZone={timeZone}
+          canMark={isClinical}
+          onClose={() => setShowToDo(false)}
+        />
       </div>
     );
   }

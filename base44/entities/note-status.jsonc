@@ -1,0 +1,19 @@
+// Which appointments have had their clinical note done: copied from AuraNoteTaker, or ticked off by a clinician as
+// written straight into Dentally. Identifiers, dates and staff emails only: never note text, never patient names.
+// Read and written only by backend functions.
+{
+  "name": "NoteStatus",
+  "type": "object",
+  "properties": {
+    "clinic_id": { "type": "string" },
+    "dentally_appointment_id": { "type": "string" },
+    "practitioner_id": { "type": "string" },
+    "appointment_date": { "type": "string", "description": "Clinic-local date, YYYY-MM-DD" },
+    "status": { "type": "string", "enum": ["COPIED", "WRITTEN_IN_DENTALLY"] },
+    "by_email": { "type": "string", "format": "email" },
+    "marked_at": { "type": "string", "format": "date-time" },
+    "session_id": { "type": "string" }
+  },
+  "required": ["clinic_id", "dentally_appointment_id", "practitioner_id", "appointment_date", "status", "by_email", "marked_at"],
+  "rls": { "create": false, "read": false, "update": false, "delete": false }
+}

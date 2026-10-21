@@ -1581,3 +1581,101 @@ input {
   grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
   gap: 4px 16px;
 }
+
+/* Note check */
+.check-results {
+  margin: 10px 0;
+}
+
+.check-findings {
+  margin: 8px 0 0;
+  padding-left: 18px;
+}
+
+.check-finding {
+  margin: 0 0 10px;
+}
+
+.check-kind {
+  font-weight: 700;
+}
+
+.check-kind::after {
+  content: ':';
+}
+
+.check-quotes {
+  margin: 4px 0 0;
+  padding-left: 16px;
+  color: var(--ink-2);
+  list-style: none;
+}
+
+.check-quotes q {
+  font-style: italic;
+}
+
+/* Notes to do */
+.todo-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 18px;
+  align-items: flex-end;
+  margin: 12px 0 16px;
+}
+
+.todo-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  margin: 0 0 14px;
+  color: var(--ink-2);
+}
+
+.todo-summary strong {
+  color: var(--ink);
+}
+
+.todo-list {
+  list-style: none;
+  margin: 0 0 20px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-m);
+  background: var(--surface);
+}
+
+.todo-item {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-top: 1px solid var(--line);
+}
+
+.todo-item:first-child {
+  border-top: 0;
+}
+
+.todo-main {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.todo-time {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}
+
+.todo-meta {
+  color: var(--ink-3);
+  font-size: 15px;
+}
+
+.todo-done {
+  color: var(--ok);
+  font-size: 15px;
+}

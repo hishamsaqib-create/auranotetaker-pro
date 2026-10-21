@@ -4,6 +4,7 @@
 
 import type { AuditEvent } from '../core/audit.ts';
 import type { NoteTemplate } from '../core/noteTemplates.ts';
+import type { NoteMark } from '../core/notesToDo.ts';
 import type { ScribeSession } from '../core/session.ts';
 import type { DentallyReadService } from '../dentally/types.ts';
 import type { ContentCipher } from './cipher.ts';
@@ -211,6 +212,20 @@ export interface HandlerDeps {
   speech: SpeechTokenIssuer;
   invites: StaffInviter;
   notes: NoteGenerator;
+  noteMarks: NoteMarkStore;
+}
+
+/**
+ * Which appointments have had their note done: copied from AuraNoteTaker, or ticked off as written in Dentally.
+ * Identifiers, dates and staff emails only: never note text, never patient names.
+ */
+export interface NoteMarkStore {
+  listByDate(clinicId: string, date: string): Promise<NoteMark[]>;
+  get(clinicId: string, appointmentId: string): Promise<NoteMark | null>;
+  /** Creates or replaces the mark for the appointment. */
+  save(clinicId: string, mark: NoteMark): Promise<void>;
+  /** Removes the mark for the appointment. Returns whether there was one. */
+  remove(clinicId: string, appointmentId: string): Promise<boolean>;
 }
 
 /** A large language model that drafts a clinical note. Text in, text out; never stores anything itself. */
